@@ -86,6 +86,7 @@ Track these fields:
 {
   "target_station_id": "station_123",
   "target_name": "Union Station",
+  "location_hint": "near Front Street and Bay Street",
   "available_docks": 2,
   "previous_available_docks": 5,
   "station_status": "active",
@@ -125,6 +126,7 @@ Each backup should track:
 {
   "station_id": "station_456",
   "name": "Bay and Front",
+  "location_hint": "near Bay Street and Front Street",
   "available_docks": 7,
   "distance_meters": 250,
   "station_status": "active",
