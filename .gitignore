@@ -1,4 +1,34 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
 venv/
+env/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment variables
 .env
-data/
-__*__/
+.env.local
+
+# IDEs
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Agent-specific
+/tmp/agent_cache/

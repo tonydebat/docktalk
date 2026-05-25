@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docktalk"
+version = "0.1.0"
+description = "Voice assistant for Bike Share Toronto riders"
+requires-python = ">=3.13"
+dependencies = [
+    "requests>=2.32",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-mock>=3",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["docktalk*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
