@@ -80,10 +80,12 @@ Python ranks real stations using distance, available docks, and station status.
 
 Gemini may help phrase the recommendation, but it should choose only from real station data provided by Python.
 
+See `docs/station_recommendation_contract.md` for the station fields used in spoken recommendations.
+
 Example spoken response:
 
 ```text
-Best choice is Union Station. It has 4 open docks. I can also watch nearby backups.
+Best choice is Union Station, near Front Street and Bay Street. It has 4 open docks. I can also watch nearby backups.
 ```
 
 ### 6. Rider Confirms
