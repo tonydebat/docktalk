@@ -98,9 +98,7 @@ def run_tick(trip_state: dict[str, Any]) -> dict[str, Any]:
     """One agent wake-up. Returns the trace (tool calls + reasoning) and final action."""
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
-        raise RuntimeError(
-            "GEMINI_API_KEY is not set. Put it in .env or set it in the environment."
-        )
+        return fallback_tick(trip_state)
 
     client = genai.Client(
         api_key=api_key,
