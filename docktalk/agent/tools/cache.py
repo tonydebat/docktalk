@@ -39,6 +39,10 @@ def delete_cache_file(cache_path: str) -> dict[str, Any]:
 
     Call this once the agent session is done to clean up disk space.
     Returns {"deleted": cache_path} on success, or an error dict on failure.
+
+    Args:
+        cache_path: Absolute path to the temporary file to delete, as returned
+            by fetch_station_information or fetch_station_status.
     """
     try:
         os.remove(cache_path)
