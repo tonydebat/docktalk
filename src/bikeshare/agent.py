@@ -240,6 +240,11 @@ def fallback_tick(trip_state: dict[str, Any]) -> dict[str, Any]:
             },
             trip_state,
         )
+        agent_tools.dispatch(
+            "set_next_check",
+            {"seconds": 20, "reason": "offline alert sent - continue monitoring urgently"},
+            trip_state,
+        )
     elif docks == 0 and minutes_to_arrival >= 15:
         # Station is full but there is time to wait for a dock to open.
         agent_tools.dispatch(
