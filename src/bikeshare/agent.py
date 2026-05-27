@@ -267,6 +267,11 @@ def fallback_tick(trip_state: dict[str, Any]) -> dict[str, Any]:
             },
             trip_state,
         )
+        agent_tools.dispatch(
+            "set_next_check",
+            {"seconds": 20, "reason": "low docks alert sent - continue monitoring urgently"},
+            trip_state,
+        )
     elif docks < 4:
         agent_tools.dispatch("set_next_check", {"seconds": 30, "reason": "low docks"}, trip_state)
     else:
