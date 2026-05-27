@@ -390,7 +390,7 @@ def dispatch(name: str, args: dict[str, Any], trip_state: dict[str, Any]) -> dic
     if name == "set_next_check":
         trip_state["next_check_seconds"] = args["seconds"]
         trip_state["next_check_reason"] = args["reason"]
-        if trip_state.get("status") != "alerted":
+        if trip_state.get("status") not in {"alerted", "finished"}:
             trip_state["status"] = "monitoring"
         return {"acknowledged": True}
     if name == "finish_trip":
