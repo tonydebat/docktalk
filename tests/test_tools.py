@@ -256,6 +256,21 @@ def test_switch_station_clears_dock_history_when_docks_not_provided():
     assert record.trip_state["dock_history"] == []
 
 
+def test_switch_station_clears_stale_alert():
+    record = _make_record_with_state()
+    record.trip_state["alert"] = {
+        "headline": "Union Station is risky",
+        "message": "Docks filling up.",
+        "alternatives": [],
+    }
+    record.trip_state["status"] = "alerted"
+    handle_switch_station(
+        {"station_id": "station_4", "station_name": "Wellington and York"}, record
+    )
+    assert record.trip_state["alert"] is None
+    assert record.trip_state["status"] == "monitoring"
+
+
 # ── stop_monitoring ───────────────────────────────────────────────────────────
 
 

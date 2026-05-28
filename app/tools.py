@@ -279,6 +279,7 @@ def handle_switch_station(args: dict[str, Any], record: "SessionRecord") -> dict
         record.trip_state["target_station_name"] = new_name
         record.trip_state["target_just_switched"] = True
         record.trip_state["status"] = "monitoring"
+        record.trip_state["alert"] = None
         # Seed dock_history with the known count so the UI updates immediately
         # rather than showing "—" until the next monitor poll.
         record.trip_state["dock_history"] = (
