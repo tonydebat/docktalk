@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DockTalk</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      /* 100svh = small viewport height (browser chrome fully visible) —
+         the stable value on iOS Safari where 100dvh shifts as the address
+         bar appears/disappears, pushing content off-screen. */
+      min-height: 100svh;
+      min-height: 100dvh; /* override with dynamic on browsers that support it */
+      gap: 1.5rem;
+      padding: 1.5rem;
+      padding-bottom: max(1.5rem, env(safe-area-inset-bottom)); /* iPhone notch */
+      width: 100%;
+    }
+
+    h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
+    .subtitle { font-size: 0.9rem; color: #94a3b8; }
+
+    #status-card {
+      background: #1e293b;
+      border-radius: 1rem;
+      padding: 1.25rem 1.5rem;
+      width: 100%;
+      max-width: 380px;
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+    }
+    #station-name { font-size: 1.1rem; font-weight: 600; }
+    #dock-count   { font-size: 0.9rem; color: #94a3b8; }
+    #monitor-status {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #64748b;
+    }
+
+    .btn {
+      padding: 0.75rem 2rem;
+      border: none;
+      border-radius: 9999px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    #btn-talk {
+      background: #2563eb;
+      color: #fff;
+      width: 100%;
+      max-width: 380px;
+    }
+    #btn-stop {
+      background: #dc2626;
+      color: #fff;
+      width: 100%;
+      max-width: 380px;
+      display: none;
+    }
+
+    #log {
+      font-size: 0.8rem;
+      color: #475569;
+      width: 100%;
+      max-width: 380px;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>🚲 DockTalk</h1>
+  <p class="subtitle">Bike Share Toronto dock assistant</p>
+
+  <div id="status-card">
+    <div id="station-name">No station selected</div>
+    <div id="dock-count">—</div>
+    <div id="monitor-status">NOT STARTED</div>
+  </div>
+
+  <button id="btn-talk" class="btn">Hold to talk</button>
+  <button id="btn-stop" class="btn">Stop monitoring</button>
+
+  <div id="log">Press and hold to speak your destination.</div>
+
+  <script src="/static/client.js"></script>
+</body>
+</html>
