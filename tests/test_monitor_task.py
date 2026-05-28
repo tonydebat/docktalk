@@ -2,8 +2,8 @@
 
 All GBFS I/O and run_tick calls are patched so tests run offline and fast.
 Tests focus on observable behaviour:
-- Alert is queued when run_tick produces an alert
-- No alert is queued when run_tick produces no alert
+- Alert is queued when run_monitor_tick produces an alert
+- No alert is queued when run_monitor_tick produces no alert
 - Cooldown prevents repeated identical alerts
 - Monitor self-terminates when session is STOPPED
 - Monitor self-terminates when GBFS data is stale
@@ -147,23 +147,22 @@ def test_monitor_queues_alert_on_warning():
 
     with (
         patch("app.monitor_task.fetch_live_status", return_value=_fake_live_status(2)),
-        patch("app.monitor_task.run_tick", side_effect=_fake_run_tick_with_alert),
-        patch("app.monitor_task.record_dock_observation", side_effect=_fake_record_dock_observation),
+        patch("app.monitor_task.run_monitor_tick", side_effect=_fake_run_tick_with_alert),
         patch("app.monitor_task.record_tick_decision", side_effect=_fake_record_tick_decision),
     ):
         # After one tick with alert, mark session STOPPED so monitor exits
-        original_run_tick = _fake_run_tick_with_alert
+        original_run_monitor_tick = _fake_run_tick_with_alert
 
         tick_count = [0]
 
-        def run_tick_then_stop(trip_state):
+        def run_monitor_tick_then_stop(trip_state):
             tick_count[0] += 1
-            result = original_run_tick(trip_state)
+            result = original_run_monitor_tick(trip_state)
             # Stop after first tick
             trip_state["status"] = "finished"
             return result
 
-        with patch("app.monitor_task.run_tick", side_effect=run_tick_then_stop):
+        with patch("app.monitor_task.run_monitor_tick", side_effect=run_monitor_tick_then_stop):
             _run_async(
                 run_monitor(
                     "test-1",
@@ -184,7 +183,7 @@ def test_monitor_no_alert_when_no_alert():
 
     tick_count = [0]
 
-    def run_tick_no_alert_then_stop(trip_state):
+    def run_monitor_tick_no_alert_then_stop(trip_state):
         tick_count[0] += 1
         _fake_run_tick_no_alert(trip_state)
         trip_state["status"] = "finished"
@@ -192,8 +191,7 @@ def test_monitor_no_alert_when_no_alert():
 
     with (
         patch("app.monitor_task.fetch_live_status", return_value=_fake_live_status(8)),
-        patch("app.monitor_task.run_tick", side_effect=run_tick_no_alert_then_stop),
-        patch("app.monitor_task.record_dock_observation", side_effect=_fake_record_dock_observation),
+        patch("app.monitor_task.run_monitor_tick", side_effect=run_monitor_tick_no_alert_then_stop),
         patch("app.monitor_task.record_tick_decision", side_effect=_fake_record_tick_decision),
     ):
         _run_async(
