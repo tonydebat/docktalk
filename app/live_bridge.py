@@ -259,90 +259,96 @@ async def _task_live_to_browser(
     audio_frame_count = 0
     output_transcript_buffer: list[str] = []  # accumulate model speech text across chunks
 
-    async for message in live_session.receive():
-        if websocket.client_state == WebSocketState.DISCONNECTED:
-            break
+    # The SDK's receive() generator exhausts after each turn_complete.  Wrap
+    # it in a while loop so the bridge stays alive across multiple turns.
+    # Without this wrapper the bridge tears down after every model response,
+    # causing a 3-second reconnect cycle and losing all conversation context.
+    while websocket.client_state != WebSocketState.DISCONNECTED:
+        async for message in live_session.receive():
+            if websocket.client_state == WebSocketState.DISCONNECTED:
+                return
 
-        # Audio from model → binary frame to browser
-        server_content = getattr(message, "server_content", None)
-        if server_content:
-            model_turn = getattr(server_content, "model_turn", None)
-            if model_turn and model_turn.parts:
-                for part in model_turn.parts:
-                    # Text part — always log so developer can see what the model says
-                    text = getattr(part, "text", None)
-                    if text:
-                        logger.info("[%s] MODEL TEXT: %s", session_id, text.strip())
+            # Audio from model → binary frame to browser
+            server_content = getattr(message, "server_content", None)
+            if server_content:
+                model_turn = getattr(server_content, "model_turn", None)
+                if model_turn and model_turn.parts:
+                    for part in model_turn.parts:
+                        # Text part — always log so developer can see what the model says
+                        text = getattr(part, "text", None)
+                        if text:
+                            logger.info("[%s] MODEL TEXT: %s", session_id, text.strip())
 
-                    # Audio part → forward to browser as binary frame
-                    inline = getattr(part, "inline_data", None)
-                    if inline and inline.data:
-                        audio_frame_count += 1
-                        if audio_frame_count % _AUDIO_LOG_EVERY_N_FRAMES == 1:
-                            logger.debug(
-                                "[%s] Audio frame #%d (%d bytes)",
-                                session_id, audio_frame_count, len(inline.data),
-                            )
-                        await websocket.send_bytes(inline.data)
+                        # Audio part → forward to browser as binary frame
+                        inline = getattr(part, "inline_data", None)
+                        if inline and inline.data:
+                            audio_frame_count += 1
+                            if audio_frame_count % _AUDIO_LOG_EVERY_N_FRAMES == 1:
+                                logger.debug(
+                                    "[%s] Audio frame #%d (%d bytes)",
+                                    session_id, audio_frame_count, len(inline.data),
+                                )
+                            await websocket.send_bytes(inline.data)
 
-            # Input transcription — what the rider said.
-            # The API sends the complete transcript as a single chunk (finished=None).
-            # Log any non-empty text; don't gate on finished=True.
-            input_tx = getattr(server_content, "input_transcription", None)
-            if input_tx:
-                tx_text = getattr(input_tx, "text", None)
-                if tx_text and tx_text.strip():
-                    logger.info("[%s] RIDER: %s", session_id, tx_text.strip())
+                # Input transcription — what the rider said.
+                # The API sends the complete transcript as a single chunk (finished=None).
+                # Log any non-empty text; don't gate on finished=True.
+                input_tx = getattr(server_content, "input_transcription", None)
+                if input_tx:
+                    tx_text = getattr(input_tx, "text", None)
+                    if tx_text and tx_text.strip():
+                        logger.info("[%s] RIDER: %s", session_id, tx_text.strip())
 
-            # Output transcription — what the model is saying.
-            # The API streams text chunks incrementally (finished=None throughout).
-            # Accumulate here; emit the full sentence on turn_complete below.
-            output_tx = getattr(server_content, "output_transcription", None)
-            if output_tx:
-                tx_text = getattr(output_tx, "text", None)
-                if tx_text and tx_text.strip():
-                    output_transcript_buffer.append(tx_text)
+                # Output transcription — what the model is saying.
+                # The API streams text chunks incrementally (finished=None throughout).
+                # Accumulate here; emit the full sentence on turn_complete below.
+                output_tx = getattr(server_content, "output_transcription", None)
+                if output_tx:
+                    tx_text = getattr(output_tx, "text", None)
+                    if tx_text and tx_text.strip():
+                        output_transcript_buffer.append(tx_text)
 
-            turn_complete = getattr(server_content, "turn_complete", False)
-            if turn_complete:
-                if output_transcript_buffer:
-                    logger.info(
-                        "[%s] AGENT: %s",
-                        session_id,
-                        "".join(output_transcript_buffer).strip(),
+                turn_complete = getattr(server_content, "turn_complete", False)
+                if turn_complete:
+                    if output_transcript_buffer:
+                        logger.info(
+                            "[%s] AGENT: %s",
+                            session_id,
+                            "".join(output_transcript_buffer).strip(),
+                        )
+                        output_transcript_buffer.clear()
+                    logger.info("[%s] Model turn complete (sent %d audio frames)", session_id, audio_frame_count)
+                    audio_frame_count = 0
+
+            # Tool call → dispatch → FunctionResponse
+            tool_call = getattr(message, "tool_call", None)
+            if tool_call and tool_call.function_calls:
+                function_responses = []
+                for fc in tool_call.function_calls:
+                    args = dict(fc.args) if fc.args else {}
+                    logger.info("[%s] TOOL CALL: %s(%s)", session_id, fc.name, args)
+                    result = await dispatch(fc.name, args, record)
+                    logger.info("[%s] TOOL RESULT: %s → %s", session_id, fc.name, result)
+
+                    # Spawn monitor after confirm_station sets spawn_monitor flag
+                    if fc.name == "confirm_station" and record.spawn_monitor:
+                        record.spawn_monitor = False
+                        await _maybe_start_monitor(session_id, sessions)
+
+                    function_responses.append(
+                        gtypes.FunctionResponse(name=fc.name, id=fc.id, response=result)
                     )
-                    output_transcript_buffer.clear()
-                logger.info("[%s] Model turn complete (sent %d audio frames)", session_id, audio_frame_count)
-                audio_frame_count = 0
 
-        # Tool call → dispatch → FunctionResponse
-        tool_call = getattr(message, "tool_call", None)
-        if tool_call and tool_call.function_calls:
-            function_responses = []
-            for fc in tool_call.function_calls:
-                args = dict(fc.args) if fc.args else {}
-                logger.info("[%s] TOOL CALL: %s(%s)", session_id, fc.name, args)
-                result = await dispatch(fc.name, args, record)
-                logger.info("[%s] TOOL RESULT: %s → %s", session_id, fc.name, result)
+                await live_session.send_tool_response(function_responses=function_responses)
 
-                # Spawn monitor after confirm_station sets spawn_monitor flag
-                if fc.name == "confirm_station" and record.spawn_monitor:
-                    record.spawn_monitor = False
-                    await _maybe_start_monitor(session_id, sessions)
+                # Push a status event to the browser DOM
+                await _send_status_event(websocket, record)
 
-                function_responses.append(
-                    gtypes.FunctionResponse(name=fc.name, id=fc.id, response=result)
-                )
-
-            await live_session.send_tool_response(function_responses=function_responses)
-
-            # Push a status event to the browser DOM
-            await _send_status_event(websocket, record)
-
-        # Server error or go_away
-        go_away = getattr(message, "go_away", None)
-        if go_away is not None:
-            logger.warning("[%s] Server sent go_away: %s", session_id, go_away)
+            # go_away means the server is shutting down this session
+            go_away = getattr(message, "go_away", None)
+            if go_away is not None:
+                logger.warning("[%s] Server sent go_away: %s", session_id, go_away)
+                return
 
 
 # ── Task C: alert_queue → Live ────────────────────────────────────────────────

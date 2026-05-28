@@ -511,6 +511,28 @@ if trip_state.get("status") == "alerted" and trip_state.get("alert"):
                     st.rerun()
 
 
+# ── 4b. Check-in Panel ─────────────────────────────────────────────────────────
+if trip_state.get("status") == "check_in":
+    check_in = trip_state.get("check_in", {})
+    st.divider()
+    st.info(f"🔔 **{check_in.get('message', 'Are you still riding?')}**")
+    ci_col1, ci_col2 = st.columns(2)
+    with ci_col1:
+        if st.button("Still riding", key="checkin_keep"):
+            trip_state["status"] = "monitoring"
+            trip_state["check_in"] = None
+            trip_state["next_check_seconds"] = 60
+            trip_state["next_check_reason"] = "rider confirmed still riding"
+            trip_state["next_check_at"] = datetime.now() + timedelta(seconds=60)
+            st.rerun()
+    with ci_col2:
+        if st.button("Done — returned bike", key="checkin_done"):
+            trip_state["status"] = "finished"
+            trip_state["finish_reason"] = "rider confirmed trip finished"
+            trip_state["check_in"] = None
+            st.rerun()
+
+
 # ── 5. Trace Expander ──────────────────────────────────────────────────────────
 if st.session_state.last_result:
     result = st.session_state.last_result
