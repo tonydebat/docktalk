@@ -191,7 +191,7 @@ def _build_spoken_message(alert: dict) -> str:
 
     if alternatives:
         alt_phrases = [
-            f"{a.get('name', '')} with {a.get('available_docks', 0)} docks"
+            f"{a.get('station_name') or a.get('name', '')} with {a.get('docks_available', a.get('available_docks', 0))} docks"
             for a in alternatives[:3]
         ]
         if len(alt_phrases) == 1:

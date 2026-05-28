@@ -235,6 +235,27 @@ def test_switch_station_updates_trip_state():
     assert "station_1" in record.trip_state["rejected_station_ids"]
 
 
+def test_switch_station_seeds_dock_history_when_docks_provided():
+    record = _make_record_with_state()
+    handle_switch_station(
+        {"station_id": "station_4", "station_name": "Wellington and York", "available_docks": 7},
+        record,
+    )
+    history = record.trip_state["dock_history"]
+    assert len(history) == 1
+    assert history[0]["docks_available"] == 7
+
+
+def test_switch_station_clears_dock_history_when_docks_not_provided():
+    record = _make_record_with_state()
+    # Pre-populate dock_history with stale data from the old station
+    record.trip_state["dock_history"] = [{"observed_at": "2024-01-01T00:00:00", "docks_available": 3}]
+    handle_switch_station(
+        {"station_id": "station_4", "station_name": "Wellington and York"}, record
+    )
+    assert record.trip_state["dock_history"] == []
+
+
 # ── stop_monitoring ───────────────────────────────────────────────────────────
 
 

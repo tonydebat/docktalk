@@ -121,13 +121,15 @@ def test_build_spoken_message_with_alternatives():
         "headline": "Your target is at risk.",
         "message": "",
         "alternatives": [
-            {"name": "Bay and Front", "available_docks": 7},
-            {"name": "Wellington and York", "available_docks": 5},
+            {"station_name": "Bay and Front", "docks_available": 7},
+            {"station_name": "Wellington and York", "docks_available": 5},
         ],
     }
     msg = _build_spoken_message(alert)
     assert "Bay and Front" in msg
     assert "Wellington and York" in msg
+    assert "7" in msg
+    assert "5" in msg
 
 
 def test_build_spoken_message_fallback():

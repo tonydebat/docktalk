@@ -131,6 +131,14 @@ TOOL_DECLARATIONS: list[types.FunctionDeclaration] = [
                     type=types.Type.STRING,
                     description="The human-readable name of the new target station.",
                 ),
+                "available_docks": types.Schema(
+                    type=types.Type.INTEGER,
+                    description=(
+                        "Current number of available docks at the new station, "
+                        "as returned by get_backup_options. Include whenever known "
+                        "so the UI updates immediately without waiting for the next poll."
+                    ),
+                ),
             },
             required=["station_id", "station_name"],
         ),
@@ -262,6 +270,7 @@ def handle_get_backup_options(args: dict[str, Any], record: "SessionRecord") -> 
 def handle_switch_station(args: dict[str, Any], record: "SessionRecord") -> dict[str, Any]:
     new_id = args["station_id"]
     new_name = args["station_name"]
+    available_docks = args.get("available_docks")
     if record.trip_state:
         old_id = record.trip_state.get("target_station_id")
         if old_id:
@@ -270,6 +279,13 @@ def handle_switch_station(args: dict[str, Any], record: "SessionRecord") -> dict
         record.trip_state["target_station_name"] = new_name
         record.trip_state["target_just_switched"] = True
         record.trip_state["status"] = "monitoring"
+        # Seed dock_history with the known count so the UI updates immediately
+        # rather than showing "—" until the next monitor poll.
+        record.trip_state["dock_history"] = (
+            [{"observed_at": datetime.now().isoformat(), "docks_available": available_docks}]
+            if available_docks is not None
+            else []
+        )
     record.status = "MONITORING_SAFE"
     return {"switched": True, "station_id": new_id, "station_name": new_name}
 

@@ -243,7 +243,14 @@ def _switch_to_option(
     trip_state["target_station_name"] = (
         chosen.get("station_name") or chosen.get("name", chosen["station_id"])
     )
-    trip_state["dock_history"] = []
+    # Seed dock_history with the known count so the UI shows docks immediately
+    # rather than "—" until the next poll cycle.
+    known_docks = chosen.get("docks_available")
+    trip_state["dock_history"] = (
+        [{"observed_at": datetime.now().isoformat(), "docks_available": known_docks}]
+        if known_docks is not None
+        else []
+    )
     trip_state["alert"] = None
     trip_state["status"] = "monitoring"
     trip_state["target_just_switched"] = True
@@ -427,7 +434,13 @@ def apply_alert_response(
 
         trip_state["target_station_id"] = chosen["station_id"]
         trip_state["target_station_name"] = chosen["station_name"]
-        trip_state["dock_history"] = []
+        # Seed dock_history with the known count so the UI shows docks immediately.
+        known_docks = chosen.get("docks_available")
+        trip_state["dock_history"] = (
+            [{"observed_at": datetime.now().isoformat(), "docks_available": known_docks}]
+            if known_docks is not None
+            else []
+        )
         trip_state["alert"] = None
         trip_state["status"] = "monitoring"
         trip_state["target_just_switched"] = True
