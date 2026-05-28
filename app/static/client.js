@@ -55,6 +55,7 @@ function connect() {
     isConnected = true;
     btnTalk.disabled = false;
     btnStop.style.display = "block";
+    btnStop.disabled = true;  // enabled only once monitoring starts
   };
 
   ws.onclose = () => {
@@ -96,11 +97,13 @@ function handleStatusEvent(data) {
     return;
   }
   if (data.type === "status") {
-    elStation.textContent = data.target_station_name || "No station selected";
-    elDocks.textContent   = data.docks != null
-      ? `${data.docks} open docks`
-      : "—";
+    const stopped = data.monitor_status === "STOPPED";
+    elStation.textContent = stopped ? "No station selected" : (data.target_station_name || "No station selected");
+    elDocks.textContent   = stopped ? "—" : (data.docks != null ? `${data.docks} open docks` : "—");
     elStatus.textContent  = (data.monitor_status || "NOT STARTED").replace(/_/g, " ");
+    const monitoring = ["MONITORING_SAFE", "MONITORING_WATCH", "MONITORING_WARNING", "ALERTED"]
+      .includes(data.monitor_status);
+    btnStop.disabled = !monitoring;
   }
 }
 

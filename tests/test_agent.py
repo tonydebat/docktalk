@@ -306,19 +306,27 @@ class TestSwitchToOption:
         assert trip_state["target_station_id"] == "s2"
         assert trip_state["target_station_name"] == "Bay and Front"
 
-    def test_success_clears_dock_history_and_alert(self):
+    def test_success_seeds_dock_history_from_chosen(self):
         from src.bikeshare.agent import _switch_to_option
         trip_state = _make_trip_state(
             last_options=self._make_options(),
             dock_history=[{"docks_available": 1}],
             alert={"headline": "Full"},
         )
-        command = {"alternative_index": 1}
+        command = {"alternative_index": 1}  # Wellington and York, docks_available=5
         _switch_to_option(command, trip_state, options_key="last_options", reason="test")
-        assert trip_state["dock_history"] == []
+        assert len(trip_state["dock_history"]) == 1
+        assert trip_state["dock_history"][0]["docks_available"] == 5
         assert trip_state["alert"] is None
         assert trip_state["status"] == "monitoring"
         assert trip_state["next_check_seconds"] == 20
+
+    def test_success_empty_dock_history_when_docks_unknown(self):
+        from src.bikeshare.agent import _switch_to_option
+        options_no_docks = [{"station_id": "s2", "station_name": "Bay and Front"}]
+        trip_state = _make_trip_state(last_options=options_no_docks)
+        _switch_to_option({"alternative_index": 0}, trip_state, options_key="last_options", reason="test")
+        assert trip_state["dock_history"] == []
 
     def test_success_appends_rejected_station(self):
         from src.bikeshare.agent import _switch_to_option
