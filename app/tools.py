@@ -57,7 +57,10 @@ TOOL_DECLARATIONS: list[types.FunctionDeclaration] = [
         name="confirm_station",
         description=(
             "Confirm the rider's chosen station and start monitoring. "
-            "Call this once the rider has selected a station from the candidates. "
+            "Call this when the rider affirms the recommended station with 'yes', "
+            "'confirm', 'go ahead', 'that one', or any similar affirmation after "
+            "resolve_destination has returned candidates. Use the station_id and "
+            "station_name of the top candidate you just presented to the rider. "
             "Returns the confirmed station name and starts the background monitor loop."
         ),
         parameters=types.Schema(

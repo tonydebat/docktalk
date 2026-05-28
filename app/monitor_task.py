@@ -12,6 +12,7 @@ goes stale for more than max_stale_minutes.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timedelta
 from typing import Any
@@ -134,11 +135,14 @@ async def run_monitor(
             last_spoken_at = datetime.now()
             logger.info("[%s] Alert queued: %s", session_id, last_spoken_alert_type)
 
-        # Update session-level status from trip state
+        # Update session-level status from trip state and push to browser
         ts_status = trip_state.get("status", "monitoring")
         if ts_status in ("finished", "STOPPED"):
             record.status = "STOPPED"
+            await _push_status_to_browser(record, trip_state)
             return
+        record.status = _derive_record_status(trip_state)
+        await _push_status_to_browser(record, trip_state)
 
         await asyncio.sleep(poll_interval_seconds)
 
@@ -196,3 +200,41 @@ def _build_spoken_message(alert: dict) -> str:
             parts.append(f"Your options are {', '.join(alt_phrases[:-1])}, and {alt_phrases[-1]}.")
 
     return " ".join(parts) or "Dock availability has changed."
+
+
+def _derive_record_status(trip_state: dict[str, Any]) -> str:
+    """Map trip_state fields to a status string for record.status and the browser card."""
+    ts_status = trip_state.get("status", "monitoring")
+    if ts_status in ("finished", "STOPPED"):
+        return "STOPPED"
+    if trip_state.get("alert"):
+        return "ALERTED"
+    latest = (trip_state.get("dock_history") or [{}])[-1]
+    docks = latest.get("docks_available")
+    if docks is not None:
+        if docks <= 2:
+            return "MONITORING_WARNING"
+        if docks <= 5:
+            return "MONITORING_WATCH"
+    return "MONITORING_SAFE"
+
+
+async def _push_status_to_browser(record: Any, trip_state: dict[str, Any]) -> None:
+    """Send a status event to the browser via the stored WebSocket reference."""
+    ws = record.ws_ref
+    if ws is None:
+        return
+    try:
+        from starlette.websockets import WebSocketState
+        if ws.client_state == WebSocketState.DISCONNECTED:
+            return
+        payload = {
+            "type": "status",
+            "monitor_status": record.status,
+            "target_station_id": trip_state.get("target_station_id", ""),
+            "target_station_name": trip_state.get("target_station_name", ""),
+            "docks": (trip_state.get("dock_history") or [{}])[-1].get("docks_available", None),
+        }
+        await ws.send_text(json.dumps(payload))
+    except Exception:
+        pass

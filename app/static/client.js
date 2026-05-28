@@ -41,6 +41,7 @@ let playbackQueue   = [];   // Array of AudioBuffer waiting to play
 let isPlaying       = false;
 let playbackCtx     = null;
 let shouldReconnect = true; // set to false when the session is explicitly ended
+let isConnected     = false; // true while WebSocket is open
 
 // ── WebSocket ────────────────────────────────────────────────────────────────
 
@@ -50,11 +51,13 @@ function connect() {
 
   ws.onopen = () => {
     log("Connected.");
+    isConnected = true;
     btnTalk.disabled = false;
     btnStop.style.display = "block";
   };
 
   ws.onclose = () => {
+    isConnected = false;
     if (!shouldReconnect) {
       log("Session ended. Reload the page to start a new trip.");
       return;
@@ -129,8 +132,21 @@ function handleAudioFrame(arrayBuffer) {
 }
 
 function playNext() {
-  if (playbackQueue.length === 0) { isPlaying = false; return; }
+  if (playbackQueue.length === 0) {
+    isPlaying = false;
+    // Re-enable talk button now that the agent has finished speaking.
+    if (isConnected) {
+      btnTalk.disabled = false;
+      btnTalk.textContent = "Hold to talk";
+    }
+    return;
+  }
   isPlaying = true;
+  // Disable talk button while agent is speaking to prevent mid-response input.
+  if (!isTalking) {
+    btnTalk.disabled = true;
+    btnTalk.textContent = "Agent speaking…";
+  }
   const buf = playbackQueue.shift();
   const src = playbackCtx.createBufferSource();
   src.buffer = buf;
