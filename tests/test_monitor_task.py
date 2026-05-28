@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.monitor_task import (
     _build_spoken_message,
+    _derive_record_status,
     _should_speak_alert,
     run_monitor,
 )
@@ -250,3 +251,30 @@ def test_monitor_exits_when_session_removed():
         )
     )
     # Should exit without error (no session)
+
+
+
+# ── _derive_record_status ─────────────────────────────────────────────────────
+
+
+def _make_ts(status="monitoring", alert=None, docks=None) -> dict:
+    history = [{"docks_available": docks}] if docks is not None else []
+    return {"status": status, "alert": alert, "dock_history": history}
+
+
+import pytest
+
+@pytest.mark.parametrize("trip_state,expected", [
+    (_make_ts(status="finished"),                  "STOPPED"),
+    (_make_ts(status="STOPPED"),                   "STOPPED"),
+    (_make_ts(alert={"headline": "low docks"}),    "ALERTED"),
+    (_make_ts(docks=2),                            "MONITORING_WARNING"),
+    (_make_ts(docks=1),                            "MONITORING_WARNING"),
+    (_make_ts(docks=0),                            "MONITORING_WARNING"),
+    (_make_ts(docks=3),                            "MONITORING_WATCH"),
+    (_make_ts(docks=5),                            "MONITORING_WATCH"),
+    (_make_ts(docks=6),                            "MONITORING_SAFE"),
+    (_make_ts(),                                   "MONITORING_SAFE"),  # no history
+])
+def test_derive_record_status(trip_state, expected):
+    assert _derive_record_status(trip_state) == expected
