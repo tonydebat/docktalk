@@ -44,7 +44,7 @@ _log.setLevel(logging.DEBUG if os.getenv("DOCKTALK_VOICE_DEBUG") else logging.IN
 VOICE_DEBUG = bool(os.getenv("DOCKTALK_VOICE_DEBUG"))
 DEBUG_DIR = Path(os.getenv("DOCKTALK_DEBUG_DIR") or "/tmp/docktalk_debug")
 
-from src.bikeshare.agent import run_tick
+from src.bikeshare.agent import run_monitor_tick
 from src.bikeshare.destination_resolver import merge_info_and_status, resolve_destination
 from src.bikeshare.parsing import classify_selection_intent, clarify_destination
 from src.bikeshare.station_data import (
@@ -445,13 +445,7 @@ if st.button(
     disabled=is_finished,
     key="btn_tick",
 ):
-    live = get_station_status(trip_state["target_station_id"])
-    record_dock_observation(
-        trip_state,
-        docks_available=live["num_docks_available"],
-        observed_at=datetime.now(timezone.utc).isoformat(),
-    )
-    result = run_tick(trip_state)
+    result = run_monitor_tick(trip_state)
     record_tick_decision(trip_state)
     trip_state["target_just_switched"] = False
     st.session_state.last_result = result

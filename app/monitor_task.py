@@ -16,9 +16,9 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any
 
-from src.bikeshare.agent import run_tick
+from src.bikeshare.agent import run_monitor_tick
 from src.bikeshare.station_data import fetch_live_status, get_station_status
-from src.bikeshare.trip_state import record_dock_observation, record_tick_decision
+from src.bikeshare.trip_state import record_tick_decision
 
 logger = logging.getLogger(__name__)
 
@@ -95,13 +95,7 @@ async def run_monitor(
             last_successful_fetch_at = datetime.now()
 
             station_data = live_status.get(station_id, {})
-            docks_available: int = station_data.get("num_docks_available", 0)
-
-            record_dock_observation(
-                trip_state,
-                docks_available=docks_available,
-                observed_at=last_successful_fetch_at.isoformat(),
-            )
+            _ = station_data  # stale-data tracking only; observation is handled by run_monitor_tick
 
         except Exception as exc:
             consecutive_failures += 1
@@ -116,11 +110,11 @@ async def run_monitor(
         # ── Risk evaluation ──────────────────────────────────────────────────
         try:
             result = await asyncio.get_running_loop().run_in_executor(
-                None, run_tick, trip_state
+                None, run_monitor_tick, trip_state
             )
             record_tick_decision(trip_state)
         except Exception as exc:
-            logger.warning("[%s] run_tick failed: %s", session_id, exc)
+            logger.warning("[%s] run_monitor_tick failed: %s", session_id, exc)
             await asyncio.sleep(poll_interval_seconds)
             continue
 
