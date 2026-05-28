@@ -9,11 +9,11 @@ description = "Voice assistant for Bike Share Toronto riders"
 requires-python = ">=3.13"
 dependencies = [
     "requests>=2.32",
-    "google-genai>=0.8",
+    "google-genai>=1.0",
     "python-dotenv>=1.0",
-    "streamlit>=1.30",
-    "audio-recorder-streamlit>=0.0.10",
-    "openai>=1.0",
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.29",
+    "websockets>=12",
     "geopy>=2.4",
 ]
 
@@ -21,6 +21,9 @@ dependencies = [
 dev = [
     "pytest>=8",
     "pytest-mock>=3",
+    "streamlit>=1.30",
+    "audio-recorder-streamlit>=0.0.10",
+    "openai>=1.0",
 ]
 
 [tool.setuptools.packages.find]
