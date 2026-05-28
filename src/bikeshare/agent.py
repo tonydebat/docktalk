@@ -207,6 +207,67 @@ def _safe_get_nearby_stations(station_id: str, radius_m: int = 800) -> list[dict
         return []
 
 
+def _switch_to_option(
+    command: dict[str, Any],
+    trip_state: dict[str, Any],
+    *,
+    options_key: str,
+    reason: str,
+) -> dict[str, Any]:
+    now = datetime.now()
+    options = trip_state.get(options_key, [])
+    alternative_index = int(command.get("alternative_index", 0))
+
+    if not options:
+        return {
+            "source": "rider_command",
+            "action": "error",
+            "message": "I do not have a recent option list. Ask for options again.",
+            "trip_state": trip_state,
+        }
+    if alternative_index < 0 or alternative_index >= len(options):
+        return {
+            "source": "rider_command",
+            "action": "error",
+            "message": "That option is not available. Ask for a different option.",
+            "trip_state": trip_state,
+        }
+
+    chosen = options[alternative_index]
+    old_station_id = trip_state["target_station_id"]
+    rejected_station_ids = trip_state.setdefault("rejected_station_ids", [])
+    if old_station_id not in rejected_station_ids:
+        rejected_station_ids.append(old_station_id)
+
+    trip_state["target_station_id"] = chosen["station_id"]
+    trip_state["target_station_name"] = (
+        chosen.get("station_name") or chosen.get("name", chosen["station_id"])
+    )
+    trip_state["dock_history"] = []
+    trip_state["alert"] = None
+    trip_state["status"] = "monitoring"
+    trip_state["target_just_switched"] = True
+    trip_state["next_check_seconds"] = 20
+    trip_state["next_check_reason"] = "target switched - confirm new station still has docks"
+    trip_state["next_check_at"] = now + timedelta(seconds=20)
+    _append_recent_decision(
+        trip_state,
+        {
+            "action": "switch_target",
+            "from_station_id": old_station_id,
+            "to_station_id": chosen["station_id"],
+            "reason": reason,
+        },
+    )
+    return {
+        "source": "rider_command",
+        "action": "switch_station",
+        "message": f"Switching to {trip_state['target_station_name']}. I will keep monitoring it.",
+        "chosen": chosen,
+        "trip_state": trip_state,
+    }
+
+
 def handle_rider_command(
     command: dict[str, Any],
     trip_state: dict[str, Any],
@@ -256,6 +317,14 @@ def handle_rider_command(
             "options": options,
             "trip_state": trip_state,
         }
+
+    if intent in {"switch_station", "switch", "accept_alternative"} and trip_state.get("last_options"):
+        return _switch_to_option(
+            command,
+            trip_state,
+            options_key="last_options",
+            reason="rider accepted a nearby option",
+        )
 
     if intent in {"cancel_monitoring", "cancel", "stop_monitoring"}:
         trip_state["status"] = "finished"
@@ -310,7 +379,7 @@ def handle_rider_command(
         return {
             "source": "rider_command",
             "action": "change_target",
-            "message": "Sure. Where should I look instead?",
+            "message": "Sure. Where should I monitor instead?",
             "trip_state": trip_state,
         }
 
@@ -346,7 +415,7 @@ def apply_alert_response(
             return {
                 "source": "alert_response",
                 "action": "error",
-                "message": "That option is not available anymore.",
+                "message": "That option is not available. Ask for a different option.",
                 "trip_state": trip_state,
             }
 

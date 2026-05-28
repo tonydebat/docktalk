@@ -40,6 +40,7 @@ let isTalking       = false;
 let playbackQueue   = [];   // Array of AudioBuffer waiting to play
 let isPlaying       = false;
 let playbackCtx     = null;
+let currentPlaybackSource = null; // active BufferSource; stopped on rider interrupt
 let shouldReconnect = true; // set to false when the session is explicitly ended
 let isConnected     = false; // true while WebSocket is open
 
@@ -134,18 +135,18 @@ function handleAudioFrame(arrayBuffer) {
 function playNext() {
   if (playbackQueue.length === 0) {
     isPlaying = false;
-    // Re-enable talk button now that the agent has finished speaking.
-    if (isConnected) {
+    currentPlaybackSource = null;
+    if (isConnected && !isTalking) {
       btnTalk.disabled = false;
       btnTalk.textContent = "Hold to talk";
     }
     return;
   }
   isPlaying = true;
-  // Disable talk button while agent is speaking to prevent mid-response input.
+  // Keep button enabled so the rider can press to interrupt the agent.
   if (!isTalking) {
-    btnTalk.disabled = true;
-    btnTalk.textContent = "Agent speaking…";
+    btnTalk.disabled = false;
+    btnTalk.textContent = "Hold to interrupt";
   }
   const buf = playbackQueue.shift();
   const src = playbackCtx.createBufferSource();
@@ -153,6 +154,7 @@ function playNext() {
   src.connect(playbackCtx.destination);
   src.onended = playNext;
   src.start();
+  currentPlaybackSource = src;
 }
 
 // ── Microphone capture ────────────────────────────────────────────────────
@@ -231,6 +233,17 @@ btnTalk.addEventListener("pointerdown", async (e) => {
   // Resume the playback AudioContext inside this user gesture so the browser
   // autoplay policy allows audio to play when Gemini responds.
   ensurePlaybackCtx();
+  // If the agent is still speaking, interrupt it: stop the current audio
+  // source, drain the queue, and let Gemini know we are starting new speech.
+  if (isPlaying) {
+    if (currentPlaybackSource) {
+      try { currentPlaybackSource.stop(); } catch (_) {}
+      currentPlaybackSource = null;
+    }
+    playbackQueue = [];
+    isPlaying = false;
+    log("Interrupted. Listening…");
+  }
   // Signal Gemini Live that speech is starting (VAD is disabled; it waits for
   // this signal before it starts listening to the incoming audio stream).
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -238,7 +251,7 @@ btnTalk.addEventListener("pointerdown", async (e) => {
   }
   isTalking = true;
   btnTalk.textContent = "Listening…";
-  log("Listening…");
+  if (!isPlaying) log("Listening…");
 });
 
 // Listen on both button and document to guarantee we catch the release

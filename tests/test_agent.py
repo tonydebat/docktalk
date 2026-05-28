@@ -286,3 +286,97 @@ class TestRunMonitorTick:
         assert result is expected_result
         mock_tick.assert_called_once_with(trip_state)
         assert trip_state["latest_station_status"] is fake_status
+
+
+# ── _switch_to_option ─────────────────────────────────────────────────────────
+
+class TestSwitchToOption:
+    def _make_options(self):
+        return [
+            {"station_id": "s2", "station_name": "Bay and Front", "docks_available": 7},
+            {"station_id": "s3", "station_name": "Wellington and York", "docks_available": 5},
+        ]
+
+    def test_success_switches_station(self):
+        from src.bikeshare.agent import _switch_to_option
+        trip_state = _make_trip_state(last_options=self._make_options())
+        command = {"alternative_index": 0}
+        result = _switch_to_option(command, trip_state, options_key="last_options", reason="test")
+        assert result["action"] == "switch_station"
+        assert trip_state["target_station_id"] == "s2"
+        assert trip_state["target_station_name"] == "Bay and Front"
+
+    def test_success_clears_dock_history_and_alert(self):
+        from src.bikeshare.agent import _switch_to_option
+        trip_state = _make_trip_state(
+            last_options=self._make_options(),
+            dock_history=[{"docks_available": 1}],
+            alert={"headline": "Full"},
+        )
+        command = {"alternative_index": 1}
+        _switch_to_option(command, trip_state, options_key="last_options", reason="test")
+        assert trip_state["dock_history"] == []
+        assert trip_state["alert"] is None
+        assert trip_state["status"] == "monitoring"
+        assert trip_state["next_check_seconds"] == 20
+
+    def test_success_appends_rejected_station(self):
+        from src.bikeshare.agent import _switch_to_option
+        trip_state = _make_trip_state(last_options=self._make_options())
+        _switch_to_option({"alternative_index": 0}, trip_state, options_key="last_options", reason="test")
+        assert "s1" in trip_state["rejected_station_ids"]
+
+    def test_success_appends_decision(self):
+        from src.bikeshare.agent import _switch_to_option
+        trip_state = _make_trip_state(last_options=self._make_options())
+        _switch_to_option({"alternative_index": 0}, trip_state, options_key="last_options", reason="test")
+        decisions = trip_state["recent_decisions"]
+        assert any(d.get("action") == "switch_target" for d in decisions)
+
+    def test_no_options_returns_error(self):
+        from src.bikeshare.agent import _switch_to_option
+        trip_state = _make_trip_state()
+        result = _switch_to_option({"alternative_index": 0}, trip_state, options_key="last_options", reason="test")
+        assert result["action"] == "error"
+        assert "option list" in result["message"]
+
+    def test_out_of_bounds_returns_error(self):
+        from src.bikeshare.agent import _switch_to_option
+        trip_state = _make_trip_state(last_options=self._make_options())
+        result = _switch_to_option({"alternative_index": 5}, trip_state, options_key="last_options", reason="test")
+        assert result["action"] == "error"
+        assert "not available" in result["message"]
+
+    def test_negative_index_returns_error(self):
+        from src.bikeshare.agent import _switch_to_option
+        trip_state = _make_trip_state(last_options=self._make_options())
+        result = _switch_to_option({"alternative_index": -1}, trip_state, options_key="last_options", reason="test")
+        assert result["action"] == "error"
+
+
+# ── handle_rider_command switch guard ─────────────────────────────────────────
+
+class TestHandleRiderCommandSwitchGuard:
+    def _make_options(self):
+        return [{"station_id": "s2", "station_name": "Bay and Front", "docks_available": 6}]
+
+    def test_accept_alternative_with_last_options_switches(self):
+        trip_state = _make_trip_state(last_options=self._make_options())
+        command = {"intent": "accept_alternative", "alternative_index": 0}
+        result = handle_rider_command(command, trip_state)
+        assert result["action"] == "switch_station"
+        assert trip_state["target_station_id"] == "s2"
+
+    def test_switch_intent_with_last_options_switches(self):
+        trip_state = _make_trip_state(last_options=self._make_options())
+        command = {"intent": "switch", "alternative_index": 0}
+        result = handle_rider_command(command, trip_state)
+        assert result["action"] == "switch_station"
+
+    def test_switch_intent_without_last_options_falls_through(self):
+        """Without last_options the switch intents should NOT call _switch_to_option."""
+        trip_state = _make_trip_state()  # no last_options
+        command = {"intent": "switch_station", "alternative_index": 0}
+        result = handle_rider_command(command, trip_state)
+        # Falls through to change_target path — action should not be switch_station
+        assert result["action"] != "switch_station"
