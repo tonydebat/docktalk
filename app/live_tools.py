@@ -15,8 +15,10 @@ from google.genai import types
 from src.bikeshare.agent import (
     apply_alert_response,
     handle_rider_command,
+    observe_target_station,
     run_monitor_tick,
 )
+from src.bikeshare.geocoding import geocode_to_nearby_stations
 from src.bikeshare.station_data import (
     fetch_all_stations,
     fetch_live_status,
@@ -204,10 +206,6 @@ TOOL_DECLARATIONS: list[types.FunctionDeclaration] = [
             properties={
                 "station_id": types.Schema(type=types.Type.STRING),
                 "station_name": types.Schema(type=types.Type.STRING),
-                "available_docks": types.Schema(
-                    type=types.Type.INTEGER,
-                    description="Known dock count for the new target, if available.",
-                ),
             },
             required=["station_id", "station_name"],
         ),
@@ -618,6 +616,20 @@ def _best_context_candidates_with_relaxed_words(
     return _rank_with_recommended_and_closest(candidates)[:5]
 
 
+def _geocode_candidates(
+    query: str,
+    stations: dict[str, Any],
+    statuses: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Nominatim geocoding fallback — used when all name/context steps miss."""
+    merged = {sid: {**info, **statuses.get(sid, {})} for sid, info in stations.items()}
+    results = geocode_to_nearby_stations(query, merged, radius_m=1500, k=5)
+    for r in results:
+        r.setdefault("station_name", r.get("name", ""))
+        r.setdefault("is_returning", 0)
+    return results
+
+
 def _resolve_destination_candidates(transcript: str) -> list[dict[str, Any]]:
     stations = fetch_all_stations()
     statuses = fetch_live_status()
@@ -645,7 +657,21 @@ def _resolve_destination_candidates(transcript: str) -> list[dict[str, Any]]:
     context_matches = _context_candidates(query, stations, statuses)
     if context_matches:
         return context_matches
-    return _best_context_candidates_with_relaxed_words(query, stations, statuses)
+    relaxed = _best_context_candidates_with_relaxed_words(query, stations, statuses)
+    if relaxed:
+        return relaxed
+
+    # Step 5: geocoding fallback — fires only when all name/context steps miss
+    return _geocode_candidates(query, stations, statuses)
+
+
+def _seed_dock_observation(record: "SessionRecord") -> None:
+    if record.trip_state is None:
+        return
+    try:
+        observe_target_station(record.trip_state)
+    except Exception:
+        pass
 
 
 def _make_trip_state(station_id: str, station_name: str) -> dict[str, Any]:
@@ -727,6 +753,8 @@ def handle_begin_change_target(
     record.awaiting_new_target = True
     record.last_candidates = []
     record.last_options = []
+    if record.trip_state is not None:
+        record.trip_state["alert"] = None
     record.last_message = "Where should DockTalk monitor instead?"
     return {
         "needs_destination": True,
@@ -741,7 +769,8 @@ def handle_confirm_station(
     station_id = args["station_id"]
     station_name = args["station_name"]
     record.trip_state = _make_trip_state(station_id, station_name)
-    record.status = "MONITORING_SAFE"
+    _seed_dock_observation(record)
+    record.status = _derive_record_status(record.trip_state)
     record.spawn_monitor = True
     record.last_options = []
     record.last_message = f"Monitoring {station_name}."
@@ -921,6 +950,8 @@ def handle_switch_to_option(
         result = _switch_to_visible_option(option_number, record)
     else:
         result = handle_rider_command(command, record.trip_state)
+    if result.get("action") == "switch_station":
+        _seed_dock_observation(record)
     record.status = _derive_record_status(record.trip_state)
     if result.get("action") == "switch_station":
         record.last_options = []
@@ -1051,12 +1082,7 @@ def handle_switch_station(
             record.trip_state.setdefault("rejected_station_ids", []).append(old_station_id)
         record.trip_state["target_station_id"] = args["station_id"]
         record.trip_state["target_station_name"] = args["station_name"]
-        known_docks = args.get("available_docks")
-        record.trip_state["dock_history"] = (
-            [{"observed_at": datetime.now().isoformat(), "docks_available": known_docks}]
-            if known_docks is not None
-            else []
-        )
+        record.trip_state["dock_history"] = []
         record.trip_state["alert"] = None
         record.trip_state["status"] = "monitoring"
         record.trip_state["target_just_switched"] = True
@@ -1064,7 +1090,8 @@ def handle_switch_station(
         record.trip_state["next_check_reason"] = "target switched from live voice"
         record.trip_state["next_check_at"] = datetime.now() + timedelta(seconds=20)
 
-    record.status = "MONITORING_SAFE"
+    _seed_dock_observation(record)
+    record.status = _derive_record_status(record.trip_state)
     record.last_options = []
     record.last_message = f"Switching to {args['station_name']}. Monitoring continues."
     record.awaiting_new_target = False
@@ -1147,19 +1174,42 @@ async def dispatch(
     return await loop.run_in_executor(None, handler, args, record)
 
 
+def _attach_coordinates(
+    rows: list[dict[str, Any]],
+    stations: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    for row in rows:
+        station_id = row.get("station_id")
+        station = stations.get(station_id, {}) if station_id else {}
+        lat = station.get("lat")
+        lon = station.get("lon")
+        merged = dict(row)
+        if lat is not None and lon is not None:
+            merged["lat"] = lat
+            merged["lon"] = lon
+        enriched.append(merged)
+    return enriched
+
+
 def format_status_payload(record: "SessionRecord") -> dict[str, Any]:
     trip_state = record.trip_state or {}
     alert = trip_state.get("alert") or {}
     options = alert.get("alternatives") or record.last_options
+    stations = fetch_all_stations()
+    target_id = trip_state.get("target_station_id", "")
+    target_station = stations.get(target_id, {})
     return {
         "type": "status",
         "monitor_status": record.status,
-        "target_station_id": trip_state.get("target_station_id", ""),
+        "target_station_id": target_id,
         "target_station_name": trip_state.get("target_station_name", ""),
+        "target_lat": target_station.get("lat"),
+        "target_lon": target_station.get("lon"),
         "docks": (trip_state.get("dock_history") or [{}])[-1].get("docks_available"),
         "message": record.last_message,
-        "candidates": record.last_candidates,
-        "options": options[:3],
+        "candidates": _attach_coordinates(record.last_candidates, stations),
+        "options": _attach_coordinates(options[:3], stations),
         "awaiting_new_target": record.awaiting_new_target,
     }
 

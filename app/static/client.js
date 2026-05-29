@@ -17,6 +17,11 @@ const elCandidatesPanel = document.getElementById("candidates-panel");
 const elCandidatesList = document.getElementById("candidates-list");
 const elOptionsPanel = document.getElementById("options-panel");
 const elOptionsList = document.getElementById("options-list");
+const elMapCard = document.getElementById("map-card");
+
+let mapInstance = null;
+let markerLayer = null;
+let lastMappedTargetId = null;
 
 let ws = null;
 let audioCtx = null;
@@ -84,16 +89,124 @@ function handleServerEvent(data) {
     return;
   }
 
-  const stopped = data.monitor_status === "STOPPED";
-  elStation.textContent = stopped ? "No station selected" : (data.target_station_name || "No station selected");
-  elDocks.textContent = stopped ? "—" : (data.docks == null ? "No live dock count yet" : `${data.docks} open docks`);
+  const status = (data.monitor_status || "").toUpperCase();
+  const stopped = status === "STOPPED";
+  const isCritical = !stopped && (status.includes("ALERTED") || status.includes("WARNING"));
+  const dockNoun = data.docks === 1 ? "dock" : "docks";
+  elStation.textContent = stopped
+    ? "No station selected"
+    : (data.target_station_name || "No station selected");
+  elDocks.textContent = stopped
+    ? "—"
+    : (data.docks == null ? "No live dock count yet" : `${data.docks} open ${dockNoun}`);
+  elDocks.classList.toggle("critical", isCritical);
   elStatus.textContent = (data.monitor_status || "Not started").replaceAll("_", " ");
   renderMessage(data.message || "");
   renderStationRows(elCandidatesPanel, elCandidatesList, data.candidates || []);
   renderStationRows(elOptionsPanel, elOptionsList, data.options || []);
+  updateMap(data);
   const monitoring = ["MONITORING_SAFE", "MONITORING_WATCH", "MONITORING_WARNING", "ALERTED"]
     .includes(data.monitor_status);
   btnStop.disabled = !monitoring;
+}
+
+const TARGET_COLOR = "#3b82f6";
+const ALTERNATIVE_COLOR = "#f59e0b";
+
+function updateMap(data) {
+  const monitorStatus = (data.monitor_status || "").toUpperCase();
+  const isAlerted = monitorStatus.includes("ALERTED") || monitorStatus.includes("WARNING");
+  const isChoosing = monitorStatus.includes("CHOOSING") || monitorStatus.includes("CHANGING");
+
+  let centerLat = data.target_lat;
+  let centerLon = data.target_lon;
+  let centerKey = data.target_station_id || "";
+
+  const candidates = data.candidates || [];
+  if (isChoosing || typeof centerLat !== "number" || typeof centerLon !== "number") {
+    const first = candidates.find((c) => typeof c.lat === "number" && typeof c.lon === "number");
+    if (first) {
+      centerLat = first.lat;
+      centerLon = first.lon;
+      centerKey = "choosing:" + (first.station_id || "");
+    }
+  }
+
+  if (typeof centerLat !== "number" || typeof centerLon !== "number") {
+    elMapCard.style.display = "none";
+    return;
+  }
+  elMapCard.style.display = "block";
+
+  if (!mapInstance) {
+    mapInstance = L.map("map", { zoomControl: false, attributionControl: false })
+      .setView([centerLat, centerLon], 16);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+    }).addTo(mapInstance);
+    L.control.attribution({ prefix: false }).addAttribution("OpenStreetMap").addTo(mapInstance);
+    markerLayer = L.layerGroup().addTo(mapInstance);
+  }
+
+  markerLayer.clearLayers();
+
+  if (centerKey !== lastMappedTargetId) {
+    mapInstance.flyTo([centerLat, centerLon], 16, { duration: 0.7 });
+    lastMappedTargetId = centerKey;
+  }
+
+  const targetName = data.target_station_name || "Target";
+  const targetDocks = data.docks;
+  const targetDockLabel = targetDocks == null ? "no live count" : `${targetDocks} open docks`;
+
+  const numberedRows = isChoosing
+    ? candidates
+    : ((data.options && data.options.length ? data.options : candidates) || []);
+  let targetWasNumbered = false;
+
+  numberedRows.forEach((row, i) => {
+    if (typeof row.lat !== "number" || typeof row.lon !== "number") return;
+    const number = i + 1;
+    const docks = row.docks_available ?? row.available_docks ?? row.num_docks_available ?? 0;
+    const name = row.station_name || row.name || "Station";
+    const isTarget = !isChoosing && row.station_id === data.target_station_id;
+    if (isTarget) targetWasNumbered = true;
+    const color = isTarget ? TARGET_COLOR : ALTERNATIVE_COLOR;
+
+    L.marker([row.lat, row.lon], {
+      icon: numberedIcon(number, color, isTarget, isAlerted && isTarget),
+      zIndexOffset: isTarget ? 1000 : 0,
+    })
+      .bindTooltip(`${name} - ${docks} docks`, { direction: "top", offset: [0, -16] })
+      .addTo(markerLayer);
+  });
+
+  if (!targetWasNumbered && !isChoosing && typeof data.target_lat === "number") {
+    L.circleMarker([data.target_lat, data.target_lon], {
+      radius: 14,
+      color: "#0b1f2a",
+      weight: 2,
+      fillColor: TARGET_COLOR,
+      fillOpacity: 0.9,
+      className: isAlerted ? "dock-pulse" : "",
+    })
+      .bindTooltip(`${targetName} - ${targetDockLabel}`, { direction: "top", offset: [0, -10] })
+      .addTo(markerLayer);
+  }
+
+  setTimeout(() => mapInstance.invalidateSize(), 0);
+}
+
+function numberedIcon(label, fillColor, isTarget, isAlerted) {
+  const size = isTarget ? 34 : 26;
+  const fontSize = isTarget ? 16 : 13;
+  const pulseClass = isAlerted ? " dock-pulse-icon" : "";
+  return L.divIcon({
+    className: "numbered-marker" + pulseClass,
+    html: `<div class="numbered-marker-inner" style="background:${fillColor};width:${size}px;height:${size}px;font-size:${fontSize}px">${label}</div>`,
+    iconSize: [size, size],
+    iconAnchor: [size / 2, size / 2],
+  });
 }
 
 function renderMessage(message) {

@@ -4,6 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DockTalk</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+        crossorigin="">
   <style>
     *, *::before, *::after { box-sizing: border-box; }
     body {
@@ -54,6 +57,10 @@
     #dock-count {
       color: #cbd5da;
       font-size: 16px;
+    }
+    #dock-count.critical {
+      color: #fca5a5;
+      font-weight: 700;
     }
     #monitor-status {
       color: #7dd3fc;
@@ -143,6 +150,58 @@
       font-size: 14px;
       line-height: 1.4;
     }
+    .map-card {
+      display: none;
+      padding: 8px;
+      border: 1px solid #2e4754;
+      border-radius: 8px;
+      background: #14232d;
+    }
+    #map {
+      height: 220px;
+      width: 100%;
+      border-radius: 6px;
+      background: #0b1f2a;
+    }
+    .leaflet-tooltip {
+      background: #172630;
+      border: 1px solid #2e4754;
+      color: #f5f7f8;
+      box-shadow: none;
+      font-size: 13px;
+    }
+    .leaflet-tooltip-top::before { border-top-color: #2e4754; }
+    @keyframes dock-pulse {
+      0%, 100% { stroke-width: 2; stroke-opacity: 1; }
+      50% { stroke-width: 8; stroke-opacity: 0.5; }
+    }
+    .dock-pulse {
+      animation: dock-pulse 1.2s ease-in-out infinite;
+    }
+    .numbered-marker {
+      background: transparent;
+      border: none;
+    }
+    .numbered-marker-inner {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      border: 2px solid #0b1f2a;
+      color: #fff;
+      font-weight: 800;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      text-shadow: 0 0 2px rgba(0, 0, 0, 0.85), 0 1px 2px rgba(0, 0, 0, 0.6);
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+      line-height: 1;
+    }
+    @keyframes icon-pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.55), 0 2px 4px rgba(0, 0, 0, 0.4); }
+      50% { box-shadow: 0 0 0 14px rgba(220, 38, 38, 0), 0 2px 4px rgba(0, 0, 0, 0.4); }
+    }
+    .dock-pulse-icon .numbered-marker-inner {
+      animation: icon-pulse 1.2s ease-out infinite;
+    }
   </style>
 </head>
 <body>
@@ -157,6 +216,10 @@
       <div id="dock-count">No live dock count yet</div>
       <div id="monitor-status">Not started</div>
       <div id="message"></div>
+    </section>
+
+    <section id="map-card" class="map-card" aria-label="Destination map">
+      <div id="map"></div>
     </section>
 
     <section id="candidates-panel" class="panel" aria-live="polite">
@@ -177,6 +240,9 @@
     <div id="log">Connecting...</div>
   </main>
 
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+          crossorigin=""></script>
   <script src="/static/client.js"></script>
 </body>
 </html>
