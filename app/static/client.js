@@ -1,122 +1,155 @@
-/**
- * DockTalk browser client
- *
- * Audio pipeline:
- *   getUserMedia → AudioContext → ScriptProcessorNode → PCM16 → WebSocket (binary)
- *
- * Playback pipeline:
- *   WebSocket binary → PCM16 bytes → AudioContext buffer → gapless queue
- *
- * Status events (JSON text frames):
- *   { type: "status", monitor_status, target_station_id,
- *     target_station_name, docks }
- */
-
 "use strict";
 
-// ── Config ──────────────────────────────────────────────────────────────────
-const SESSION_ID    = crypto.randomUUID();
-// Use wss:// when the page itself is served over HTTPS (required for mobile
-// browsers that block plain ws:// on non-localhost origins).
-const WS_PROTOCOL   = location.protocol === "https:" ? "wss" : "ws";
-const WS_URL        = `${WS_PROTOCOL}://${location.host}/ws/${SESSION_ID}`;
-const SAMPLE_RATE   = 16000;   // PCM16, mono, 16 kHz — what Gemini Live expects
-const CHUNK_SIZE    = 2048;    // ScriptProcessor buffer size
+const SESSION_ID = crypto.randomUUID();
+const WS_PROTOCOL = location.protocol === "https:" ? "wss" : "ws";
+const WS_URL = `${WS_PROTOCOL}://${location.host}/ws/${SESSION_ID}`;
+const SAMPLE_RATE = 16000;
+const CHUNK_SIZE = 2048;
 
-// ── DOM refs ────────────────────────────────────────────────────────────────
-const btnTalk      = document.getElementById("btn-talk");
-const btnStop      = document.getElementById("btn-stop");
-const elStation    = document.getElementById("station-name");
-const elDocks      = document.getElementById("dock-count");
-const elStatus     = document.getElementById("monitor-status");
-const elLog        = document.getElementById("log");
+const btnTalk = document.getElementById("btn-talk");
+const btnStop = document.getElementById("btn-stop");
+const elStation = document.getElementById("station-name");
+const elDocks = document.getElementById("dock-count");
+const elStatus = document.getElementById("monitor-status");
+const elLog = document.getElementById("log");
+const elMessage = document.getElementById("message");
+const elCandidatesPanel = document.getElementById("candidates-panel");
+const elCandidatesList = document.getElementById("candidates-list");
+const elOptionsPanel = document.getElementById("options-panel");
+const elOptionsList = document.getElementById("options-list");
 
-// ── State ───────────────────────────────────────────────────────────────────
-let ws              = null;
-let audioCtx        = null;
-let micStream       = null;
-let processorNode   = null;
-let isTalking       = false;
-let playbackQueue   = [];   // Array of AudioBuffer waiting to play
-let isPlaying       = false;
-let playbackCtx     = null;
-let currentPlaybackSource = null; // active BufferSource; stopped on rider interrupt
-let shouldReconnect = true; // set to false when the session is explicitly ended
-let isConnected     = false; // true while WebSocket is open
-
-// ── WebSocket ────────────────────────────────────────────────────────────────
+let ws = null;
+let audioCtx = null;
+let micStream = null;
+let processorNode = null;
+let isTalking = false;
+let playbackCtx = null;
+let playbackQueue = [];
+let isPlaying = false;
+let currentPlaybackSource = null;
+let shouldReconnect = true;
+let isConnected = false;
 
 function connect() {
   ws = new WebSocket(WS_URL);
   ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
-    log("Connected.");
     isConnected = true;
     btnTalk.disabled = false;
     btnStop.style.display = "block";
     btnStop.disabled = true;  // enabled only once monitoring starts
+    log("Connected. Hold to speak your destination.");
   };
 
   ws.onclose = () => {
     isConnected = false;
+    btnTalk.disabled = true;
     if (!shouldReconnect) {
-      log("Session ended. Reload the page to start a new trip.");
+      log("Session ended. Reload to start again.");
       return;
     }
-    log("Disconnected. Reconnecting…");
-    btnTalk.disabled = true;
+    log("Disconnected. Reconnecting...");
     setTimeout(connect, 3000);
   };
 
-  ws.onerror = (e) => {
-    log("WebSocket error — check console.");
-    console.error("WS error", e);
+  ws.onerror = (event) => {
+    console.error("WebSocket error", event);
+    log("Connection error. Check the server terminal.");
   };
 
   ws.onmessage = (event) => {
     if (typeof event.data === "string") {
-      handleStatusEvent(JSON.parse(event.data));
-    } else {
-      handleAudioFrame(event.data);
+      handleServerEvent(JSON.parse(event.data));
+      return;
     }
+    handleAudioFrame(event.data);
   };
 }
 
-// ── Status events ─────────────────────────────────────────────────────────
-
-function handleStatusEvent(data) {
+function handleServerEvent(data) {
   if (data.type === "session_ended") {
-    // Server confirmed the session is over (rider said cancel / returned bike).
-    // Stop reconnecting so we don't spin up a new Gemini Live session.
     shouldReconnect = false;
     btnTalk.disabled = true;
     btnStop.style.display = "none";
-    elStatus.textContent = "SESSION ENDED";
-    log("Session ended. Reload the page to start a new trip.");
+    elStatus.textContent = "Session ended";
+    log("Session ended. Reload to start again.");
     return;
   }
-  if (data.type === "status") {
-    const stopped = data.monitor_status === "STOPPED";
-    elStation.textContent = stopped ? "No station selected" : (data.target_station_name || "No station selected");
-    elDocks.textContent   = stopped ? "—" : (data.docks != null ? `${data.docks} open docks` : "—");
-    elStatus.textContent  = (data.monitor_status || "NOT STARTED").replace(/_/g, " ");
-    const monitoring = ["MONITORING_SAFE", "MONITORING_WATCH", "MONITORING_WARNING", "ALERTED"]
-      .includes(data.monitor_status);
-    btnStop.disabled = !monitoring;
+  if (data.type === "error") {
+    log(data.message || "Server error.");
+    return;
   }
+  if (data.type !== "status") {
+    return;
+  }
+
+  const stopped = data.monitor_status === "STOPPED";
+  elStation.textContent = stopped ? "No station selected" : (data.target_station_name || "No station selected");
+  elDocks.textContent = stopped ? "—" : (data.docks == null ? "No live dock count yet" : `${data.docks} open docks`);
+  elStatus.textContent = (data.monitor_status || "Not started").replaceAll("_", " ");
+  renderMessage(data.message || "");
+  renderStationRows(elCandidatesPanel, elCandidatesList, data.candidates || []);
+  renderStationRows(elOptionsPanel, elOptionsList, data.options || []);
+  const monitoring = ["MONITORING_SAFE", "MONITORING_WATCH", "MONITORING_WARNING", "ALERTED"]
+    .includes(data.monitor_status);
+  btnStop.disabled = !monitoring;
 }
 
-// ── Playback ──────────────────────────────────────────────────────────────
+function renderMessage(message) {
+  if (!message) {
+    elMessage.style.display = "none";
+    elMessage.textContent = "";
+    return;
+  }
+  elMessage.style.display = "block";
+  elMessage.textContent = message;
+}
+
+function renderStationRows(panel, list, rows) {
+  list.innerHTML = "";
+  if (!rows.length) {
+    panel.style.display = "none";
+    return;
+  }
+
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    const stationName = row.station_name || row.name || "Nearby station";
+    const docks = row.docks_available ?? row.available_docks ?? row.num_docks_available ?? 0;
+    const distance = row.distance_m ?? row.distance_meters;
+    const role = row.candidate_role;
+    const roleLabel = role === "recommended" ? "Recommended" : role === "closest" ? "Closest" : "";
+
+    const item = document.createElement("div");
+    item.className = "option-row";
+
+    const index = document.createElement("div");
+    index.className = "option-index";
+    index.textContent = `${i + 1}`;
+
+    const name = document.createElement("div");
+    name.className = "option-name";
+    name.textContent = stationName;
+
+    const meta = document.createElement("div");
+    meta.className = "option-meta";
+    const stationMeta = distance == null ? `${docks} docks` : `${docks} docks, ${distance} m`;
+    meta.textContent = roleLabel ? `${roleLabel} - ${stationMeta}` : stationMeta;
+
+    item.append(index, name, meta);
+    list.append(item);
+  }
+
+  panel.style.display = "grid";
+}
 
 function ensurePlaybackCtx() {
   if (!playbackCtx) {
     playbackCtx = new (window.AudioContext || window.webkitAudioContext)({
-      sampleRate: 24000, // Gemini Live outputs at 24 kHz
+      sampleRate: 24000,
     });
   }
-  // Resume if the browser suspended the context (autoplay policy).
-  // Must be called inside a user-gesture handler to succeed.
   if (playbackCtx.state === "suspended") {
     playbackCtx.resume().catch(() => {});
   }
@@ -126,13 +159,15 @@ function handleAudioFrame(arrayBuffer) {
   ensurePlaybackCtx();
   const pcm16 = new Int16Array(arrayBuffer);
   const float32 = new Float32Array(pcm16.length);
-  for (let i = 0; i < pcm16.length; i++) {
+  for (let i = 0; i < pcm16.length; i += 1) {
     float32[i] = pcm16[i] / 32768;
   }
-  const buf = playbackCtx.createBuffer(1, float32.length, 24000);
-  buf.copyToChannel(float32, 0);
-  playbackQueue.push(buf);
-  if (!isPlaying) playNext();
+  const buffer = playbackCtx.createBuffer(1, float32.length, 24000);
+  buffer.copyToChannel(float32, 0);
+  playbackQueue.push(buffer);
+  if (!isPlaying) {
+    playNext();
+  }
 }
 
 function playNext() {
@@ -145,138 +180,157 @@ function playNext() {
     }
     return;
   }
+
   isPlaying = true;
-  // Keep button enabled so the rider can press to interrupt the agent.
   if (!isTalking) {
     btnTalk.disabled = false;
     btnTalk.textContent = "Hold to interrupt";
   }
-  const buf = playbackQueue.shift();
-  const src = playbackCtx.createBufferSource();
-  src.buffer = buf;
-  src.connect(playbackCtx.destination);
-  src.onended = playNext;
-  src.start();
-  currentPlaybackSource = src;
+
+  const source = playbackCtx.createBufferSource();
+  source.buffer = playbackQueue.shift();
+  source.connect(playbackCtx.destination);
+  source.onended = playNext;
+  source.start();
+  currentPlaybackSource = source;
 }
 
-// ── Microphone capture ────────────────────────────────────────────────────
-
 async function startMic() {
-  // navigator.mediaDevices is undefined on non-HTTPS pages in mobile browsers.
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    log("⚠️ Microphone unavailable. Open this page over HTTPS or use localhost.");
+    log("Microphone unavailable. Use HTTPS or localhost.");
     btnTalk.disabled = true;
     return false;
   }
+
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)({
       sampleRate: SAMPLE_RATE,
     });
   }
-  if (audioCtx.state === "suspended") await audioCtx.resume();
+  if (audioCtx.state === "suspended") {
+    await audioCtx.resume();
+  }
+
   try {
     micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-  } catch (err) {
-    log(`⚠️ Microphone access denied: ${err.message}`);
+  } catch (error) {
+    log(`Microphone access denied: ${error.message}`);
     btnTalk.disabled = true;
     return false;
   }
+
   const source = audioCtx.createMediaStreamSource(micStream);
   processorNode = audioCtx.createScriptProcessor(CHUNK_SIZE, 1, 1);
 
-  processorNode.onaudioprocess = (e) => {
-    if (!isTalking || !ws || ws.readyState !== WebSocket.OPEN) return;
-    const float32 = e.inputBuffer.getChannelData(0);
+  processorNode.onaudioprocess = (event) => {
+    if (!isTalking || !ws || ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    const float32 = event.inputBuffer.getChannelData(0);
     const pcm16 = floatToPCM16(float32);
     ws.send(pcm16.buffer);
   };
 
   source.connect(processorNode);
   processorNode.connect(audioCtx.destination);
-  log("Mic ready. Hold the button to talk.");
+  log("Mic ready. Hold to talk.");
   return true;
 }
 
-function stopMic() {
-  if (processorNode) { processorNode.disconnect(); processorNode = null; }
-  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+function sendCurrentLocation() {
+  if (!navigator.geolocation || !ws || ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      ws.send(JSON.stringify({
+        type: "current_location",
+        lat: position.coords.latitude,
+        lon: position.coords.longitude,
+        accuracy_m: position.coords.accuracy,
+        observed_at: new Date().toISOString(),
+      }));
+    },
+    () => {},
+    {
+      enableHighAccuracy: true,
+      maximumAge: 15000,
+      timeout: 5000,
+    },
+  );
 }
 
 function floatToPCM16(float32) {
   const pcm = new Int16Array(float32.length);
-  for (let i = 0; i < float32.length; i++) {
-    const clamped = Math.max(-1, Math.min(1, float32[i]));
-    pcm[i] = clamped < 0 ? clamped * 32768 : clamped * 32767;
+  for (let i = 0; i < float32.length; i += 1) {
+    const value = Math.max(-1, Math.min(1, float32[i]));
+    pcm[i] = value < 0 ? value * 32768 : value * 32767;
   }
   return pcm;
 }
 
-// ── Button handlers ───────────────────────────────────────────────────────
-
 function stopTalking() {
-  if (!isTalking) return;
+  if (!isTalking) {
+    return;
+  }
   isTalking = false;
+  btnTalk.classList.remove("listening");
   btnTalk.textContent = "Hold to talk";
-  log("Processing…");
-  // Tell Gemini Live the rider has finished speaking.
-  // With automatic VAD disabled this is what triggers the model to respond.
+  log("Processing...");
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: "end_of_speech" }));
   }
 }
 
-btnTalk.addEventListener("pointerdown", async (e) => {
-  e.preventDefault();
-  btnTalk.setPointerCapture(e.pointerId); // ensure pointerup always fires on this element
+btnTalk.addEventListener("pointerdown", async (event) => {
+  event.preventDefault();
+  btnTalk.setPointerCapture(event.pointerId);
+
   if (!micStream) {
     const ok = await startMic();
-    if (!ok) return;  // mic unavailable — error already shown
+    if (!ok) {
+      return;
+    }
   }
-  // Resume the playback AudioContext inside this user gesture so the browser
-  // autoplay policy allows audio to play when Gemini responds.
+
   ensurePlaybackCtx();
-  // If the agent is still speaking, interrupt it: stop the current audio
-  // source, drain the queue, and let Gemini know we are starting new speech.
+  sendCurrentLocation();
   if (isPlaying) {
     if (currentPlaybackSource) {
-      try { currentPlaybackSource.stop(); } catch (_) {}
+      try {
+        currentPlaybackSource.stop();
+      } catch (_) {}
       currentPlaybackSource = null;
     }
     playbackQueue = [];
     isPlaying = false;
-    log("Interrupted. Listening…");
+    log("Listening...");
   }
-  // Signal Gemini Live that speech is starting (VAD is disabled; it waits for
-  // this signal before it starts listening to the incoming audio stream).
+
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: "start_of_speech" }));
   }
   isTalking = true;
-  btnTalk.textContent = "Listening…";
-  if (!isPlaying) log("Listening…");
+  btnTalk.classList.add("listening");
+  btnTalk.textContent = "Listening...";
+  log("Listening...");
 });
 
-// Listen on both button and document to guarantee we catch the release
 btnTalk.addEventListener("pointerup", stopTalking);
 btnTalk.addEventListener("pointercancel", stopTalking);
 document.addEventListener("pointerup", stopTalking);
 document.addEventListener("pointercancel", stopTalking);
 
 btnStop.addEventListener("click", async () => {
-  log("Stopping…");
+  log("Stopping...");
   await fetch(`/session/${SESSION_ID}/stop`, { method: "POST" });
   btnStop.disabled = true;
-  elStatus.textContent = "STOPPED";
+  elStatus.textContent = "Stopped";
 });
 
-// ── Helpers ───────────────────────────────────────────────────────────────
-
-function log(msg) {
-  elLog.textContent = msg;
+function log(message) {
+  elLog.textContent = message;
 }
-
-// ── Init ──────────────────────────────────────────────────────────────────
 
 btnTalk.disabled = true;
 connect();

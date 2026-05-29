@@ -35,13 +35,11 @@ from websockets.exceptions import ConnectionClosedError
 
 from app.monitor_task import run_monitor
 from app.session_store import SessionRecord
-from app.tools import GEMINI_TOOLS, dispatch
+from app.live_tools import GEMINI_TOOLS, dispatch, format_status_payload
 
 logger = logging.getLogger(__name__)
 
-_SYSTEM_PROMPT_PATH = (
-    Path(__file__).parent.parent / "docktalk" / "agent" / "prompts" / "live_system.md"
-)
+_SYSTEM_PROMPT_PATH = Path(__file__).resolve().parents[1] / "prompt" / "06_live_voice_agent.md"
 _LIVE_MODEL = "gemini-3.1-flash-live-preview"
 
 # Log 1 in every N audio frames to avoid flooding at 60fps
@@ -138,7 +136,7 @@ async def run_bridge(
             await _inject_reconnect_snapshot(live_session, record)
 
         browser_to_live_task = asyncio.create_task(
-            _task_browser_to_live(websocket, live_session),
+            _task_browser_to_live(websocket, live_session, record),
             name=f"browser-to-live-{session_id}",
         )
         live_to_browser_task = asyncio.create_task(
@@ -193,6 +191,7 @@ async def run_bridge(
 async def _task_browser_to_live(
     websocket: WebSocket,
     live_session,
+    record: SessionRecord,
 ) -> None:
     """Forward PCM16 audio and push-to-talk activity signals to Gemini Live.
 
@@ -239,10 +238,25 @@ async def _task_browser_to_live(
                         activity_end=gtypes.ActivityEnd()
                     )
                     logger.debug("Sent ActivityEnd to Gemini Live")
+                elif ctrl_type == "current_location":
+                    _update_rider_location(record, ctrl)
 
     except (WebSocketDisconnect, ConnectionClosedError):
         pass
     logger.info("Browser audio relay ended (%d frames sent)", frames_sent)
+
+
+def _update_rider_location(record: SessionRecord, payload: dict) -> None:
+    lat = payload.get("lat")
+    lon = payload.get("lon")
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        return
+    record.rider_location = {
+        "lat": lat,
+        "lon": lon,
+        "accuracy_m": payload.get("accuracy_m"),
+        "observed_at": payload.get("observed_at"),
+    }
 
 
 # ── Task B: Live → browser ────────────────────────────────────────────────────
@@ -427,15 +441,7 @@ async def _send_status_event(websocket: WebSocket, record: SessionRecord) -> Non
     """Push a JSON status event to the browser."""
     if websocket.client_state == WebSocketState.DISCONNECTED:
         return
-    ts = record.trip_state or {}
-    payload = {
-        "type": "status",
-        "monitor_status": record.status,
-        "target_station_id": ts.get("target_station_id", ""),
-        "target_station_name": ts.get("target_station_name", ""),
-        "docks": (ts.get("dock_history") or [{}])[-1].get("docks_available", None),
-    }
     try:
-        await websocket.send_text(json.dumps(payload))
+        await websocket.send_text(json.dumps(format_status_payload(record)))
     except Exception:
         pass

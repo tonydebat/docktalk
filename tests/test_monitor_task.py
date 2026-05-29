@@ -1,10 +1,10 @@
-"""Unit tests for app/monitor_task.py.
+"""Unit tests for app/monitor_task.py and related helpers in app/live_tools.py.
 
-All GBFS I/O and run_tick calls are patched so tests run offline and fast.
+All GBFS I/O and tick calls are patched so tests run offline and fast.
 Tests focus on observable behaviour:
-- Alert is queued when run_monitor_tick produces an alert
-- No alert is queued when run_monitor_tick produces no alert
-- Cooldown prevents repeated identical alerts
+- Alert is queued when run_background_monitor_tick produces an alert
+- No alert is queued when tick produces no alert
+- Signature-based dedup prevents re-speaking the same alert
 - Monitor self-terminates when session is STOPPED
 - Monitor self-terminates when GBFS data is stale
 """
@@ -21,19 +21,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.monitor_task import (
-    _build_spoken_message,
-    _derive_record_status,
-    _should_speak_alert,
-    run_monitor,
-)
+from app.live_tools import build_alert_spoken_message, _derive_record_status
+from app.monitor_task import run_monitor
 from app.session_store import SessionRecord
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-def _make_session(status="monitoring") -> dict:
+def _make_session(status="monitoring") -> SessionRecord:
     record = SessionRecord(session_id="test-1")
     record.trip_state = {
         "target_station_id": "station_1",
@@ -47,71 +43,12 @@ def _make_session(status="monitoring") -> dict:
     return record
 
 
-def _fake_live_status(docks: int = 4) -> dict:
-    return {"station_1": {"num_docks_available": docks}}
-
-
-def _fake_run_tick_no_alert(trip_state: dict) -> dict:
-    trip_state.pop("alert", None)
-    return {"source": "fallback", "trace": [], "trip_state": trip_state}
-
-
-def _fake_run_tick_with_alert(trip_state: dict) -> dict:
-    trip_state["alert"] = {
-        "type": "warning",
-        "headline": "Docks are filling up.",
-        "message": "Only 2 docks left.",
-        "alternatives": [],
-    }
-    return {"source": "llm", "trace": [], "trip_state": trip_state}
-
-
-def _fake_record_dock_observation(trip_state, docks_available, observed_at):
-    trip_state.setdefault("dock_history", []).append(
-        {"docks_available": docks_available, "observed_at": observed_at}
-    )
-
-
-def _fake_record_tick_decision(trip_state):
-    pass
-
-
-# ── _should_speak_alert ───────────────────────────────────────────────────────
-
-
-def test_should_speak_when_no_prior_alert():
-    alert = {"type": "warning"}
-    assert _should_speak_alert(alert, None, None, 180) is True
-
-
-def test_should_not_speak_during_cooldown():
-    alert = {"type": "warning"}
-    last_at = datetime.now() - timedelta(seconds=60)
-    assert _should_speak_alert(alert, "warning", last_at, 180) is False
-
-
-def test_should_speak_after_cooldown_expires():
-    alert = {"type": "warning"}
-    last_at = datetime.now() - timedelta(seconds=200)
-    assert _should_speak_alert(alert, "warning", last_at, 180) is True
-
-
-def test_critical_always_breaks_cooldown():
-    alert = {"type": "critical"}
-    last_at = datetime.now()  # just spoken
-    assert _should_speak_alert(alert, "critical", last_at, 180) is True
-
-
-def test_no_alert_never_speaks():
-    assert _should_speak_alert(None, None, None, 180) is False
-
-
-# ── _build_spoken_message ─────────────────────────────────────────────────────
+# ── build_alert_spoken_message ────────────────────────────────────────────────
 
 
 def test_build_spoken_message_headline_and_message():
     alert = {"headline": "Docks are filling up.", "message": "Only 2 left.", "alternatives": []}
-    msg = _build_spoken_message(alert)
+    msg = build_alert_spoken_message(alert)
     assert "Docks are filling up." in msg
     assert "Only 2 left." in msg
 
@@ -125,7 +62,7 @@ def test_build_spoken_message_with_alternatives():
             {"station_name": "Wellington and York", "docks_available": 5},
         ],
     }
-    msg = _build_spoken_message(alert)
+    msg = build_alert_spoken_message(alert)
     assert "Bay and Front" in msg
     assert "Wellington and York" in msg
     assert "7" in msg
@@ -133,7 +70,7 @@ def test_build_spoken_message_with_alternatives():
 
 
 def test_build_spoken_message_fallback():
-    msg = _build_spoken_message({"headline": "", "message": "", "alternatives": []})
+    msg = build_alert_spoken_message({"headline": "", "message": "", "alternatives": []})
     assert len(msg) > 0
 
 
@@ -148,32 +85,24 @@ def test_monitor_queues_alert_on_warning():
     record = _make_session()
     sessions = {"test-1": record}
 
-    with (
-        patch("app.monitor_task.fetch_live_status", return_value=_fake_live_status(2)),
-        patch("app.monitor_task.run_monitor_tick", side_effect=_fake_run_tick_with_alert),
-        patch("app.monitor_task.record_tick_decision", side_effect=_fake_record_tick_decision),
-    ):
-        # After one tick with alert, mark session STOPPED so monitor exits
-        original_run_monitor_tick = _fake_run_tick_with_alert
+    def tick_with_alert_then_stop(r):
+        r.trip_state["alert"] = {
+            "type": "warning",
+            "headline": "Docks are filling up.",
+            "message": "Only 2 docks left.",
+            "alternatives": [],
+        }
+        r.trip_state["status"] = "finished"
+        return {"source": "monitor", "action": "alert"}
 
-        tick_count = [0]
-
-        def run_monitor_tick_then_stop(trip_state):
-            tick_count[0] += 1
-            result = original_run_monitor_tick(trip_state)
-            # Stop after first tick
-            trip_state["status"] = "finished"
-            return result
-
-        with patch("app.monitor_task.run_monitor_tick", side_effect=run_monitor_tick_then_stop):
-            _run_async(
-                run_monitor(
-                    "test-1",
-                    sessions,
-                    poll_interval_seconds=0,
-                    quick_retry_seconds=0,
-                )
+    with patch("app.monitor_task.run_background_monitor_tick", side_effect=tick_with_alert_then_stop):
+        _run_async(
+            run_monitor(
+                "test-1",
+                sessions,
+                poll_interval_seconds=0,
             )
+        )
 
     assert not record.alert_queue.empty()
     alert_msg = record.alert_queue.get_nowait()
@@ -184,76 +113,84 @@ def test_monitor_no_alert_when_no_alert():
     record = _make_session()
     sessions = {"test-1": record}
 
-    tick_count = [0]
+    def tick_no_alert_then_stop(r):
+        r.trip_state.pop("alert", None)
+        r.trip_state["status"] = "finished"
+        return {"source": "monitor", "action": "ok"}
 
-    def run_monitor_tick_no_alert_then_stop(trip_state):
-        tick_count[0] += 1
-        _fake_run_tick_no_alert(trip_state)
-        trip_state["status"] = "finished"
-        return {"source": "fallback", "trace": [], "trip_state": trip_state}
-
-    with (
-        patch("app.monitor_task.fetch_live_status", return_value=_fake_live_status(8)),
-        patch("app.monitor_task.run_monitor_tick", side_effect=run_monitor_tick_no_alert_then_stop),
-        patch("app.monitor_task.record_tick_decision", side_effect=_fake_record_tick_decision),
-    ):
+    with patch("app.monitor_task.run_background_monitor_tick", side_effect=tick_no_alert_then_stop):
         _run_async(
             run_monitor(
                 "test-1",
                 sessions,
                 poll_interval_seconds=0,
-                quick_retry_seconds=0,
             )
         )
 
     assert record.alert_queue.empty()
 
 
-def test_monitor_terminates_when_stopped():
-    record = _make_session(status="finished")
-    sessions = {"test-1": record}
-
-    # Monitor should exit immediately without calling run_tick
-    with patch("app.monitor_task.fetch_live_status") as mock_fetch:
-        _run_async(
-            run_monitor(
-                "test-1",
-                sessions,
-                poll_interval_seconds=0,
-                quick_retry_seconds=0,
-            )
-        )
-    # fetch should not be called if trip_state is already finished
-    # (it may be called once to check; the key thing is the monitor exits)
-    assert record.status != "in_progress"
-
-
-def test_monitor_exits_when_session_removed():
+def test_monitor_dedup_same_alert_signature():
+    """Same headline+message should not be re-spoken on the second tick."""
     record = _make_session()
     sessions = {"test-1": record}
 
     tick_count = [0]
 
-    async def remove_session_after_first_check():
-        # Remove session mid-run to trigger exit
-        del sessions["test-1"]
+    def tick_same_alert_twice(r):
+        tick_count[0] += 1
+        r.trip_state["alert"] = {
+            "headline": "Low docks.",
+            "message": "Only 2 left.",
+            "alternatives": [],
+        }
+        if tick_count[0] >= 2:
+            r.trip_state["status"] = "finished"
+        return {"source": "monitor", "action": "alert"}
 
-    def fetch_then_remove(docks=4):
-        sessions.pop("test-1", None)
-        return _fake_live_status(docks)
+    with patch("app.monitor_task.run_background_monitor_tick", side_effect=tick_same_alert_twice):
+        _run_async(
+            run_monitor(
+                "test-1",
+                sessions,
+                poll_interval_seconds=0,
+            )
+        )
 
-    # Monitor should exit gracefully when sessions dict no longer has entry
-    sessions2: dict = {}
+    # Alert should only be queued once (signature dedup)
+    count = 0
+    while not record.alert_queue.empty():
+        record.alert_queue.get_nowait()
+        count += 1
+    assert count == 1
+
+
+def test_monitor_terminates_when_stopped():
+    record = _make_session(status="finished")
+    sessions = {"test-1": record}
+
+    with patch("app.monitor_task.run_background_monitor_tick") as mock_tick:
+        _run_async(
+            run_monitor(
+                "test-1",
+                sessions,
+                poll_interval_seconds=0,
+            )
+        )
+    # Monitor should exit without running any ticks since status is already finished
+    mock_tick.assert_not_called()
+
+
+def test_monitor_exits_when_session_removed():
+    sessions: dict = {}
+    # Should exit without error when session doesn't exist
     _run_async(
         run_monitor(
             "nonexistent-session",
-            sessions2,
+            sessions,
             poll_interval_seconds=0,
-            quick_retry_seconds=0,
         )
     )
-    # Should exit without error (no session)
-
 
 
 # ── _derive_record_status ─────────────────────────────────────────────────────
@@ -264,12 +201,9 @@ def _make_ts(status="monitoring", alert=None, docks=None) -> dict:
     return {"status": status, "alert": alert, "dock_history": history}
 
 
-import pytest
-
 @pytest.mark.parametrize("trip_state,expected", [
     (_make_ts(status="finished"),                  "STOPPED"),
-    (_make_ts(status="STOPPED"),                   "STOPPED"),
-    (_make_ts(alert={"headline": "low docks"}),    "ALERTED"),
+    (_make_ts(status="alerted"),                   "ALERTED"),
     (_make_ts(docks=2),                            "MONITORING_WARNING"),
     (_make_ts(docks=1),                            "MONITORING_WARNING"),
     (_make_ts(docks=0),                            "MONITORING_WARNING"),
@@ -280,3 +214,4 @@ import pytest
 ])
 def test_derive_record_status(trip_state, expected):
     assert _derive_record_status(trip_state) == expected
+

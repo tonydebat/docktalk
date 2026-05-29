@@ -1,101 +1,181 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DockTalk</title>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
+    *, *::before, *::after { box-sizing: border-box; }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #0f172a;
-      color: #e2e8f0;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      /* 100svh = small viewport height (browser chrome fully visible) —
-         the stable value on iOS Safari where 100dvh shifts as the address
-         bar appears/disappears, pushing content off-screen. */
+      margin: 0;
       min-height: 100svh;
-      min-height: 100dvh; /* override with dynamic on browsers that support it */
-      gap: 1.5rem;
-      padding: 1.5rem;
-      padding-bottom: max(1.5rem, env(safe-area-inset-bottom)); /* iPhone notch */
-      width: 100%;
+      min-height: 100dvh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #101820;
+      color: #f5f7f8;
+      display: grid;
+      place-items: center;
+      padding: 20px;
     }
-
-    h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
-    .subtitle { font-size: 0.9rem; color: #94a3b8; }
-
-    #status-card {
-      background: #1e293b;
-      border-radius: 1rem;
-      padding: 1.25rem 1.5rem;
-      width: 100%;
-      max-width: 380px;
-      display: flex;
-      flex-direction: column;
-      gap: 0.4rem;
+    main {
+      width: min(430px, 100%);
+      display: grid;
+      gap: 18px;
     }
-    #station-name { font-size: 1.1rem; font-weight: 600; }
-    #dock-count   { font-size: 0.9rem; color: #94a3b8; }
+    header {
+      display: grid;
+      gap: 4px;
+      text-align: center;
+    }
+    h1 {
+      margin: 0;
+      font-size: 34px;
+      font-weight: 750;
+      letter-spacing: 0;
+    }
+    .subtitle {
+      margin: 0;
+      color: #aab6bd;
+      font-size: 15px;
+    }
+    .status-card {
+      display: grid;
+      gap: 8px;
+      padding: 18px;
+      border: 1px solid #2e4754;
+      border-radius: 8px;
+      background: #172630;
+    }
+    #station-name {
+      font-size: 20px;
+      font-weight: 700;
+      line-height: 1.25;
+    }
+    #dock-count {
+      color: #cbd5da;
+      font-size: 16px;
+    }
     #monitor-status {
-      font-size: 0.75rem;
-      text-transform: uppercase;
+      color: #7dd3fc;
+      font-size: 12px;
+      font-weight: 700;
       letter-spacing: 0.08em;
-      color: #64748b;
+      text-transform: uppercase;
     }
-
-    .btn {
-      padding: 0.75rem 2rem;
-      border: none;
-      border-radius: 9999px;
-      font-size: 1rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: opacity 0.15s;
-    }
-    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-    #btn-talk {
-      background: #2563eb;
-      color: #fff;
-      width: 100%;
-      max-width: 380px;
-    }
-    #btn-stop {
-      background: #dc2626;
-      color: #fff;
-      width: 100%;
-      max-width: 380px;
+    #message {
+      color: #dbeafe;
+      font-size: 15px;
+      line-height: 1.35;
       display: none;
     }
-
+    .panel {
+      display: none;
+      gap: 10px;
+      padding: 16px;
+      border: 1px solid #2e4754;
+      border-radius: 8px;
+      background: #14232d;
+    }
+    .panel-title {
+      color: #aab6bd;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .option-row {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 10px;
+      align-items: baseline;
+      padding: 10px 0;
+      border-top: 1px solid #263a45;
+    }
+    .option-row:first-of-type {
+      border-top: 0;
+    }
+    .option-index {
+      color: #7dd3fc;
+      font-weight: 800;
+    }
+    .option-name {
+      font-weight: 700;
+      line-height: 1.25;
+    }
+    .option-meta {
+      color: #cbd5da;
+      font-size: 14px;
+      text-align: right;
+    }
+    .controls {
+      display: grid;
+      gap: 10px;
+    }
+    button {
+      min-height: 54px;
+      border: 0;
+      border-radius: 8px;
+      font-size: 18px;
+      font-weight: 750;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    #btn-talk {
+      color: #071016;
+      background: #7dd3fc;
+    }
+    #btn-talk.listening {
+      color: #fff;
+      background: #dc2626;
+    }
+    #btn-stop {
+      color: #fff;
+      background: #334155;
+      display: none;
+    }
     #log {
-      font-size: 0.8rem;
-      color: #475569;
-      width: 100%;
-      max-width: 380px;
+      min-height: 22px;
+      color: #aab6bd;
       text-align: center;
+      font-size: 14px;
+      line-height: 1.4;
     }
   </style>
 </head>
 <body>
-  <h1>🚲 DockTalk</h1>
-  <p class="subtitle">Bike Share Toronto dock assistant</p>
+  <main>
+    <header>
+      <h1>DockTalk</h1>
+      <p class="subtitle">Voice return assistant for Bike Share Toronto</p>
+    </header>
 
-  <div id="status-card">
-    <div id="station-name">No station selected</div>
-    <div id="dock-count">—</div>
-    <div id="monitor-status">NOT STARTED</div>
-  </div>
+    <section class="status-card" aria-live="polite">
+      <div id="station-name">No station selected</div>
+      <div id="dock-count">No live dock count yet</div>
+      <div id="monitor-status">Not started</div>
+      <div id="message"></div>
+    </section>
 
-  <button id="btn-talk" class="btn">Hold to talk</button>
-  <button id="btn-stop" class="btn">Stop monitoring</button>
+    <section id="candidates-panel" class="panel" aria-live="polite">
+      <div class="panel-title">Matched Station</div>
+      <div id="candidates-list"></div>
+    </section>
 
-  <div id="log">Press and hold to speak your destination.</div>
+    <section id="options-panel" class="panel" aria-live="polite">
+      <div class="panel-title">Nearby Options</div>
+      <div id="options-list"></div>
+    </section>
+
+    <section class="controls">
+      <button id="btn-talk" disabled>Hold to talk</button>
+      <button id="btn-stop">Stop monitoring</button>
+    </section>
+
+    <div id="log">Connecting...</div>
+  </main>
 
   <script src="/static/client.js"></script>
 </body>
