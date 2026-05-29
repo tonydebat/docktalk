@@ -28,3 +28,8 @@ class SessionRecord:
     status: str = "NOT_STARTED"
     # Set by handle_confirm_station; cleared by live_bridge after spawning
     spawn_monitor: bool = False
+    last_candidates: list[dict[str, Any]] = field(default_factory=list)
+    last_options: list[dict[str, Any]] = field(default_factory=list)
+    last_message: str = ""
+    awaiting_new_target: bool = False
+    rider_location: dict[str, Any] | None = None
