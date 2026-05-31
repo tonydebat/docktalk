@@ -116,6 +116,8 @@ def observe_target_station(trip_state: dict[str, Any]) -> dict[str, Any]:
         "station_status": status["station_status"],
         "is_returning": status["is_returning"],
     }
+    if "ebikes_available" in status:
+        observation["ebikes_available"] = status["ebikes_available"]
 
     dock_history = trip_state.setdefault("dock_history", [])
     dock_history.append(observation)
@@ -171,11 +173,19 @@ def _append_recent_decision(trip_state: dict[str, Any], decision: dict[str, Any]
 def _format_station_update(status: dict[str, Any]) -> str:
     station_name = status.get("name") or status.get("station_id", "the target station")
     docks = status.get("num_docks_available", 0)
+    ebikes = status.get("ebikes_available")
     station_status = status.get("station_status", "unknown")
     is_returning = int(status.get("is_returning", 0))
 
     if station_status != "active" or is_returning == 0:
         return f"{station_name} is not accepting returns right now."
+    if ebikes is not None:
+        dock_noun = "dock" if docks == 1 else "docks"
+        ebike_noun = "e-bike" if ebikes == 1 else "e-bikes"
+        return (
+            f"{station_name} has {docks} open {dock_noun} and "
+            f"{ebikes} available {ebike_noun} right now. I am still watching it."
+        )
     if docks == 1:
         return f"{station_name} has 1 open dock right now. I am still watching it."
     return f"{station_name} has {docks} open docks right now. I am still watching it."
@@ -246,8 +256,13 @@ def _switch_to_option(
     # Seed dock_history with the known count so the UI shows docks immediately
     # rather than "—" until the next poll cycle.
     known_docks = chosen.get("docks_available")
+    known_ebikes = chosen.get("ebikes_available")
     trip_state["dock_history"] = (
-        [{"observed_at": datetime.now().isoformat(), "docks_available": known_docks}]
+        [{
+            "observed_at": datetime.now().isoformat(),
+            "docks_available": known_docks,
+            **({"ebikes_available": known_ebikes} if known_ebikes is not None else {}),
+        }]
         if known_docks is not None
         else []
     )
@@ -436,8 +451,13 @@ def apply_alert_response(
         trip_state["target_station_name"] = chosen["station_name"]
         # Seed dock_history with the known count so the UI shows docks immediately.
         known_docks = chosen.get("docks_available")
+        known_ebikes = chosen.get("ebikes_available")
         trip_state["dock_history"] = (
-            [{"observed_at": datetime.now().isoformat(), "docks_available": known_docks}]
+            [{
+                "observed_at": datetime.now().isoformat(),
+                "docks_available": known_docks,
+                **({"ebikes_available": known_ebikes} if known_ebikes is not None else {}),
+            }]
             if known_docks is not None
             else []
         )

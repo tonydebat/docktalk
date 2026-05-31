@@ -344,8 +344,9 @@ async def _task_live_to_browser(
                     result = await dispatch(fc.name, args, record)
                     logger.info("[%s] TOOL RESULT: %s → %s", session_id, fc.name, result)
 
-                    # Spawn monitor after confirm_station sets spawn_monitor flag
-                    if fc.name == "confirm_station" and record.spawn_monitor:
+                    # Any tool may confirm a station indirectly (for example,
+                    # switch_to_option before monitoring has started).
+                    if record.spawn_monitor:
                         record.spawn_monitor = False
                         await _maybe_start_monitor(session_id, sessions)
 
