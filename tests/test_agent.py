@@ -41,15 +41,17 @@ def _make_trip_state(**overrides) -> dict:
     return state
 
 
-def _make_station_status(docks=5, station_status="active", is_returning=1) -> dict:
-    return {
+def _make_station_status(docks=5, station_status="active", is_returning=1, ebikes=None) -> dict:
+    status = {
         "num_docks_available": docks,
         "station_status": station_status,
         "is_returning": is_returning,
         "observed_at": datetime.now().isoformat(),
         "name": "Union Station",
     }
-
+    if ebikes is not None:
+        status["ebikes_available"] = ebikes
+    return status
 
 def _make_alert(alternatives=None) -> dict:
     if alternatives is None:
@@ -238,6 +240,13 @@ class TestObserveTargetStation:
             observe_target_station(trip_state)
         assert len(trip_state["dock_history"]) == 1
         assert trip_state["dock_history"][0]["docks_available"] == 6
+
+    def test_appends_ebikes_to_dock_history_when_available(self):
+        trip_state = _make_trip_state()
+        fake_status = _make_station_status(docks=6, ebikes=3)
+        with patch("src.bikeshare.agent.agent_tools.get_station_status", return_value=fake_status):
+            observe_target_station(trip_state)
+        assert trip_state["dock_history"][0]["ebikes_available"] == 3
 
     def test_sets_latest_station_status(self):
         trip_state = _make_trip_state()

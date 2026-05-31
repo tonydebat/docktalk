@@ -22,6 +22,7 @@ from src.bikeshare.geocoding import geocode_to_nearby_stations
 from src.bikeshare.station_data import (
     fetch_all_stations,
     fetch_live_status,
+    get_nearby_ebike_stations,
     get_nearby_stations,
     get_station_status,
     haversine_m,
@@ -164,6 +165,32 @@ TOOL_DECLARATIONS: list[types.FunctionDeclaration] = [
                 "station_id": types.Schema(type=types.Type.STRING),
             },
             required=["station_id"],
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="get_nearby_ebike_stations",
+        description=(
+            "Find up to 3 stations nearest to the rider's current browser location "
+            "that have available e-bikes and open return docks. Call when the rider "
+            "asks where they can get an e-bike, asks for e-bike stations nearby, "
+            "or wants to change target specifically to find an e-bike. Do not use "
+            "this when the rider asks for e-bikes near the target station."
+        ),
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={},
+        ),
+    ),
+    types.FunctionDeclaration(
+        name="get_ebike_stations_near_target",
+        description=(
+            "Find up to 3 stations nearest to the current monitored target station "
+            "that have available e-bikes and open return docks. Call when the rider "
+            "asks for e-bikes near their target, destination, or monitored station."
+        ),
+        parameters=types.Schema(
+            type=types.Type.OBJECT,
+            properties={},
         ),
     ),
     types.FunctionDeclaration(
@@ -772,6 +799,7 @@ def handle_confirm_station(
     _seed_dock_observation(record)
     record.status = _derive_record_status(record.trip_state)
     record.spawn_monitor = True
+    record.last_candidates = []
     record.last_options = []
     record.last_message = f"Monitoring {station_name}."
     record.awaiting_new_target = False
@@ -913,6 +941,31 @@ def _dock_count_phrase(count: int) -> str:
     return f"{count} open {noun}"
 
 
+def _format_ebike_options(
+    options: list[dict[str, Any]],
+    *,
+    intro: str = "Nearby e-bike options are",
+    empty_message: str = "I do not see any nearby stations with both e-bikes and open docks right now.",
+) -> str:
+    if not options:
+        return empty_message
+
+    phrases = []
+    for option in options[:3]:
+        station_name = option.get("station_name") or option.get("name", "nearby station")
+        ebikes = int(option.get("ebikes_available", 0) or 0)
+        docks = int(option.get("docks_available", 0) or 0)
+        distance = option.get("distance_m") or option.get("distance_meters")
+        ebike_noun = "e-bike" if ebikes == 1 else "e-bikes"
+        dock_noun = "dock" if docks == 1 else "docks"
+        distance_phrase = f", {distance} meters away" if distance is not None else ""
+        phrases.append(
+            f"{station_name} with {ebikes} {ebike_noun} and {docks} open {dock_noun}{distance_phrase}"
+        )
+
+    return intro + " " + "; ".join(phrases) + "."
+
+
 def handle_get_backup_options(
     args: dict[str, Any],
     record: "SessionRecord",
@@ -928,6 +981,95 @@ def handle_get_backup_options(
     return {"options": options, "spoken_message": result["message"]}
 
 
+def handle_get_nearby_ebike_stations(
+    args: dict[str, Any],
+    record: "SessionRecord",
+) -> dict[str, Any]:
+    location = record.rider_location or {}
+    lat = location.get("lat")
+    lon = location.get("lon")
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        record.last_message = "I need your current location to find nearby e-bikes."
+        return {
+            "options": [],
+            "spoken_message": record.last_message,
+            "location_available": False,
+            "battery_details_available": False,
+        }
+
+    target_station_id = None
+    if record.trip_state is not None:
+        target_station_id = record.trip_state.get("target_station_id")
+
+    options = get_nearby_ebike_stations(
+        float(lat),
+        float(lon),
+        max_results=3,
+        exclude_station_id=target_station_id,
+    )
+    record.last_options = options[:3]
+    record.last_candidates = []
+    record.last_message = _format_ebike_options(options)
+    return {
+        "options": options,
+        "spoken_message": record.last_message,
+        "location_available": True,
+        "battery_details_available": False,
+        "battery_details_note": "Station availability shows e-bike counts, but not per-bike battery levels.",
+    }
+
+
+def handle_get_ebike_stations_near_target(
+    args: dict[str, Any],
+    record: "SessionRecord",
+) -> dict[str, Any]:
+    if record.trip_state is None:
+        record.last_message = "No target station is being monitored yet."
+        return {
+            "options": [],
+            "spoken_message": record.last_message,
+            "target_available": False,
+            "battery_details_available": False,
+        }
+
+    target_station_id = record.trip_state.get("target_station_id")
+    target_station_name = record.trip_state.get("target_station_name", "your target")
+    target_station = fetch_all_stations().get(target_station_id, {})
+    lat = target_station.get("lat")
+    lon = target_station.get("lon")
+    if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+        record.last_message = "I do not have map coordinates for your target station."
+        return {
+            "options": [],
+            "spoken_message": record.last_message,
+            "target_available": False,
+            "battery_details_available": False,
+        }
+
+    options = get_nearby_ebike_stations(
+        float(lat),
+        float(lon),
+        max_results=3,
+        exclude_station_id=target_station_id,
+    )
+    record.last_options = options[:3]
+    record.last_candidates = []
+    record.last_message = _format_ebike_options(
+        options,
+        intro=f"E-bike options near {target_station_name} are",
+        empty_message=f"I do not see any e-bike stations near {target_station_name} right now.",
+    )
+    return {
+        "options": options,
+        "spoken_message": record.last_message,
+        "target_available": True,
+        "target_station_id": target_station_id,
+        "target_station_name": target_station_name,
+        "battery_details_available": False,
+        "battery_details_note": "Station availability shows e-bike counts, but not per-bike battery levels.",
+    }
+
+
 def handle_switch_to_option(
     args: dict[str, Any],
     record: "SessionRecord",
@@ -937,17 +1079,16 @@ def handle_switch_to_option(
     if candidate_result is not None:
         return candidate_result
 
-    if record.trip_state is None:
-        return {"switched": False, "message": "No station is being monitored yet."}
-
     command = {
         "intent": "switch_station",
         "alternative_index": option_number - 1,
     }
-    if record.trip_state.get("status") == "alerted":
+    if record.trip_state is not None and record.trip_state.get("status") == "alerted":
         result = apply_alert_response(command, record.trip_state)
     elif record.last_options:
         result = _switch_to_visible_option(option_number, record)
+    elif record.trip_state is None:
+        return {"switched": False, "message": "No station option is available to monitor."}
     else:
         result = handle_rider_command(command, record.trip_state)
     if result.get("action") == "switch_station":
@@ -1036,14 +1177,6 @@ def _switch_to_visible_option(
     option_number: int,
     record: "SessionRecord",
 ) -> dict[str, Any]:
-    if record.trip_state is None:
-        return {
-            "source": "rider_command",
-            "action": "error",
-            "message": "No station is being monitored yet.",
-            "trip_state": None,
-        }
-
     index = option_number - 1
     if index < 0 or index >= len(record.last_options):
         return {
@@ -1056,14 +1189,22 @@ def _switch_to_visible_option(
     chosen = record.last_options[index]
     station_id = chosen["station_id"]
     station_name = chosen.get("station_name") or chosen.get("name", station_id)
-    result = handle_switch_station(
-        {"station_id": station_id, "station_name": station_name},
-        record,
-    )
+    if record.trip_state is None:
+        result = handle_confirm_station(
+            {"station_id": station_id, "station_name": station_name},
+            record,
+        )
+        message = f"Monitoring {station_name}."
+    else:
+        result = handle_switch_station(
+            {"station_id": station_id, "station_name": station_name},
+            record,
+        )
+        message = f"Switching to {station_name}. I will keep monitoring it."
     return {
         "source": "rider_command",
         "action": "switch_station",
-        "message": f"Switching to {station_name}. I will keep monitoring it.",
+        "message": message,
         "chosen": chosen,
         "trip_state": record.trip_state,
         "tool_result": result,
@@ -1092,6 +1233,7 @@ def handle_switch_station(
 
     _seed_dock_observation(record)
     record.status = _derive_record_status(record.trip_state)
+    record.last_candidates = []
     record.last_options = []
     record.last_message = f"Switching to {args['station_name']}. Monitoring continues."
     record.awaiting_new_target = False
@@ -1135,6 +1277,17 @@ def _derive_record_status(trip_state: dict[str, Any]) -> str:
     return "MONITORING_SAFE"
 
 
+def _latest_target_ebikes(trip_state: dict[str, Any]) -> int | None:
+    latest = (trip_state.get("dock_history") or [{}])[-1]
+    ebikes = latest.get("ebikes_available")
+    if ebikes is not None:
+        return int(ebikes)
+    latest_status = trip_state.get("latest_station_status") or {}
+    if latest_status.get("ebikes_available") is not None:
+        return int(latest_status["ebikes_available"])
+    return None
+
+
 def run_background_monitor_tick(record: "SessionRecord") -> dict[str, Any]:
     if record.trip_state is None:
         return {"source": "monitor", "action": "no_trip_state"}
@@ -1155,6 +1308,8 @@ _HANDLERS = {
     "get_target_description": handle_get_target_description,
     "get_distance_to_target": handle_get_distance_to_target,
     "get_backup_options": handle_get_backup_options,
+    "get_nearby_ebike_stations": handle_get_nearby_ebike_stations,
+    "get_ebike_stations_near_target": handle_get_ebike_stations_near_target,
     "switch_to_option": handle_switch_to_option,
     "choose_station_by_role": handle_choose_station_by_role,
     "switch_station": handle_switch_station,
@@ -1207,6 +1362,7 @@ def format_status_payload(record: "SessionRecord") -> dict[str, Any]:
         "target_lat": target_station.get("lat"),
         "target_lon": target_station.get("lon"),
         "docks": (trip_state.get("dock_history") or [{}])[-1].get("docks_available"),
+        "ebikes": _latest_target_ebikes(trip_state),
         "message": record.last_message,
         "candidates": _attach_coordinates(record.last_candidates, stations),
         "options": _attach_coordinates(options[:3], stations),

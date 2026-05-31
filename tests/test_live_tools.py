@@ -14,7 +14,11 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from app.live_tools import handle_switch_station
+from app.live_tools import (
+    handle_get_ebike_stations_near_target,
+    handle_get_nearby_ebike_stations,
+    handle_switch_station,
+)
 from app.session_store import SessionRecord
 
 
@@ -157,3 +161,141 @@ def test_format_status_payload_attaches_coordinates():
     assert payload["candidates"][0]["lon"] == -79.3790
     assert payload["options"][0]["lat"] == 43.6470
     assert payload["options"][0]["lon"] == -79.3795
+
+
+def test_format_status_payload_includes_target_ebikes():
+    from app.live_tools import format_status_payload
+    record = _make_record_with_active_station()
+    record.trip_state["dock_history"][-1]["ebikes_available"] = 3
+    with patch("app.live_tools.fetch_all_stations", return_value={}):
+        payload = format_status_payload(record)
+    assert payload["ebikes"] == 3
+
+
+def test_get_nearby_ebike_stations_requires_location():
+    record = _make_record_with_active_station()
+    record.rider_location = None
+
+    result = handle_get_nearby_ebike_stations({}, record)
+
+    assert result["location_available"] is False
+    assert result["options"] == []
+    assert "location" in result["spoken_message"].lower()
+
+
+def test_get_nearby_ebike_stations_returns_top_options():
+    record = _make_record_with_active_station()
+    record.rider_location = {"lat": 43.65, "lon": -79.38}
+    options = [
+        {
+            "station_id": "7002",
+            "station_name": "King and Bay",
+            "docks_available": 4,
+            "ebikes_available": 2,
+            "distance_m": 150,
+            "battery_details_available": False,
+        },
+        {
+            "station_id": "7003",
+            "station_name": "Front and Bay",
+            "docks_available": 3,
+            "ebikes_available": 1,
+            "distance_m": 240,
+            "battery_details_available": False,
+        },
+    ]
+
+    with patch("app.live_tools.get_nearby_ebike_stations", return_value=options) as mock_get:
+        result = handle_get_nearby_ebike_stations({}, record)
+
+    mock_get.assert_called_once_with(
+        43.65,
+        -79.38,
+        max_results=3,
+        exclude_station_id="7001",
+    )
+    assert result["location_available"] is True
+    assert result["options"] == options
+    assert record.last_options == options
+    assert "e-bike" in result["spoken_message"]
+
+
+def test_get_nearby_ebike_stations_before_target_does_not_exclude_station():
+    record = SessionRecord(session_id="test-live-no-target")
+    record.rider_location = {"lat": 43.65, "lon": -79.38}
+
+    with patch("app.live_tools.get_nearby_ebike_stations", return_value=[]) as mock_get:
+        handle_get_nearby_ebike_stations({}, record)
+
+    mock_get.assert_called_once_with(
+        43.65,
+        -79.38,
+        max_results=3,
+        exclude_station_id=None,
+    )
+
+
+def test_get_ebike_stations_near_target_anchors_on_target_station():
+    record = _make_record_with_active_station()
+    stations_map = {
+        "7001": {"name": "Union Station", "lat": 43.6453, "lon": -79.3806},
+    }
+    options = [
+        {
+            "station_id": "7004",
+            "station_name": "Nearby E-bike Station",
+            "docks_available": 8,
+            "ebikes_available": 2,
+            "distance_m": 220,
+        },
+    ]
+
+    with (
+        patch("app.live_tools.fetch_all_stations", return_value=stations_map),
+        patch("app.live_tools.get_nearby_ebike_stations", return_value=options) as mock_get,
+    ):
+        result = handle_get_ebike_stations_near_target({}, record)
+
+    mock_get.assert_called_once_with(
+        43.6453,
+        -79.3806,
+        max_results=3,
+        exclude_station_id="7001",
+    )
+    assert result["target_available"] is True
+    assert result["options"] == options
+    assert record.last_options == options
+    assert "near Union Station" in result["spoken_message"]
+
+
+def test_get_ebike_stations_near_target_requires_target():
+    record = SessionRecord(session_id="test-live-no-target")
+
+    result = handle_get_ebike_stations_near_target({}, record)
+
+    assert result["target_available"] is False
+    assert result["options"] == []
+    assert "No target" in result["spoken_message"]
+
+
+def test_switch_to_ebike_option_before_monitoring_starts_confirms_station():
+    from app.live_tools import handle_switch_to_option
+
+    record = SessionRecord(session_id="test-live-ebike-confirm")
+    record.last_options = [
+        {
+            "station_id": "7002",
+            "station_name": "Danforth Ave / Lamb Ave",
+            "docks_available": 14,
+            "ebikes_available": 1,
+        },
+    ]
+
+    with patch("app.live_tools.observe_target_station", side_effect=Exception("offline")):
+        result = handle_switch_to_option({"option_number": 1}, record)
+
+    assert result["switched"] is True
+    assert record.trip_state["target_station_id"] == "7002"
+    assert record.trip_state["target_station_name"] == "Danforth Ave / Lamb Ave"
+    assert record.spawn_monitor is True
+    assert record.status == "MONITORING_SAFE"

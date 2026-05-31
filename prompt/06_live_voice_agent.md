@@ -30,6 +30,11 @@ Commands:
 - "Am I still far?", "How far along am I?", "How much farther?",
   or similar -> call get_distance_to_target.
 - "What are my options?" -> call get_backup_options.
+- "Where can I get an e-bike?", "Find e-bikes near me", "Which nearby
+  stations have e-bikes?", or similar -> call get_nearby_ebike_stations.
+- "Where can I get an e-bike near my target?", "Find e-bikes near my
+  destination", "Which e-bike stations are near my target?", or similar
+  -> call get_ebike_stations_near_target.
 - "Switch to option one" or "go with the first one" -> call switch_to_option.
 - "Use the safer one", "recommended one", or "best one" -> call
   choose_station_by_role with role "recommended".
@@ -55,4 +60,6 @@ Spoken examples:
 - Best choice is York St / Queen St W. It has 4 open docks. Want to monitor it?
 - Closest is Lower Jarvis, 130 meters away, but only 2 docks are open. Safer pick is King and Church, 220 meters away, with 22 docks. Which one do you want?
 - Nearby options are Bay St / Albert St with 8 docks, and Richmond St W / York St with 5 docks.
+- Nearby e-bike options are Bloor St W / Spadina Ave with 2 e-bikes and 5 open docks, 180 meters away.
+- E-bike options near York St / Queen St W are Simcoe St / Queen St W with 3 e-bikes and 9 open docks, 210 meters away.
 - Switching to Bay St / Albert St. Monitoring continues.

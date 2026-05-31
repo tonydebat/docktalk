@@ -189,7 +189,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         "name": "get_nearby_stations",
         "description": (
             "List alternative stations within radius_m of the given station, with current docks, "
-            "walking time, capacity class, area type, historical risk, and context hints. "
+            "available e-bikes when published by GBFS, walking time, capacity class, area type, "
+            "historical risk, and context hints. "
             "Use this when you need alternatives to recommend without making separate profile calls "
             "for every candidate."
         ),
@@ -351,6 +352,7 @@ def predict_fill_probability(station_id: str, minutes_ahead: int) -> dict[str, A
     if station_status != "active" or is_returning == 0:
         return {
             "num_docks_available": status.get("num_docks_available", 0),
+            "ebikes_available": status.get("ebikes_available", 0),
             "station_status": station_status,
             "is_returning": is_returning,
             "p_under_2_docks": 1.0,
@@ -368,6 +370,7 @@ def predict_fill_probability(station_id: str, minutes_ahead: int) -> dict[str, A
     )
     return {
         "num_docks_available": status["num_docks_available"],
+        "ebikes_available": status.get("ebikes_available", 0),
         "station_status": station_status,
         "is_returning": is_returning,
         **prediction,

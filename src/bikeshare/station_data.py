@@ -12,11 +12,17 @@ STATION_STATUS_URL = (
 STATION_INFO_URL = (
     "https://toronto.publicbikesystem.net/customer/gbfs/v3.0/station_information"
 )
+VEHICLE_TYPES_URL = (
+    "https://toronto.publicbikesystem.net/customer/gbfs/v3.0/vehicle_types"
+)
 
 _STATUS_CACHE_TTL = 30  # seconds, shared across tool calls within a single agent tick
 
 _info_cache: dict[str, dict[str, Any]] | None = None
 _status_cache: tuple[float, dict[str, dict[str, Any]]] | None = None
+_vehicle_types_cache: dict[str, dict[str, Any]] | None = None
+
+ELECTRIC_BIKE_PROPULSION_TYPES = {"electric", "electric_assist"}
 
 
 def _extract_name(name_field: Any) -> str:
@@ -64,14 +70,68 @@ def fetch_live_status() -> dict[str, dict[str, Any]]:
         s["station_id"]: {
             "station_id": s["station_id"],
             "num_docks_available": s.get("num_docks_available", 0),
-            "num_bikes_available": s.get("num_bikes_available", 0),
+            "num_bikes_available": s.get(
+                "num_bikes_available",
+                s.get("num_vehicles_available", 0),
+            ),
+            "num_vehicles_available": s.get("num_vehicles_available", 0),
+            "vehicle_types_available": s.get("vehicle_types_available", []),
+            "vehicle_docks_available": s.get("vehicle_docks_available", []),
+            "num_vehicles_disabled": s.get("num_vehicles_disabled", 0),
+            "num_docks_disabled": s.get("num_docks_disabled", 0),
+            "is_installed": s.get("is_installed", 1),
+            "is_renting": s.get("is_renting", 1),
             "is_returning": s.get("is_returning", 0),
             "station_status": s.get("station_status", "active"),
+            "last_reported": s.get("last_reported"),
         }
         for s in feed["data"]["stations"]
     }
     _status_cache = (now, data)
     return data
+
+
+def fetch_vehicle_types() -> dict[str, dict[str, Any]]:
+    """Fetch GBFS vehicle type metadata, keyed by vehicle_type_id."""
+    global _vehicle_types_cache
+    if _vehicle_types_cache is not None:
+        return _vehicle_types_cache
+    with urlopen(VEHICLE_TYPES_URL, timeout=15) as response:
+        feed = json.load(response)
+    _vehicle_types_cache = {
+        vehicle_type["vehicle_type_id"]: vehicle_type
+        for vehicle_type in feed["data"]["vehicle_types"]
+    }
+    return _vehicle_types_cache
+
+
+def _is_electric_bike_type(vehicle_type: dict[str, Any]) -> bool:
+    return (
+        vehicle_type.get("form_factor") == "bicycle"
+        and vehicle_type.get("propulsion_type") in ELECTRIC_BIKE_PROPULSION_TYPES
+    )
+
+
+def count_ebikes_available(
+    station_status: dict[str, Any],
+    vehicle_types: dict[str, dict[str, Any]] | None = None,
+) -> int:
+    """Return the available electric-assist/electric bicycle count at a station."""
+    if "num_ebikes_available" in station_status:
+        return int(station_status.get("num_ebikes_available") or 0)
+
+    if vehicle_types is None:
+        try:
+            vehicle_types = fetch_vehicle_types()
+        except Exception:
+            return 0
+    total = 0
+    for row in station_status.get("vehicle_types_available", []):
+        vehicle_type_id = row.get("vehicle_type_id")
+        vehicle_type = vehicle_types.get(vehicle_type_id, {})
+        if _is_electric_bike_type(vehicle_type):
+            total += int(row.get("count") or 0)
+    return total
 
 
 def get_station_status(station_id: str) -> dict[str, Any]:
@@ -83,9 +143,16 @@ def get_station_status(station_id: str) -> dict[str, Any]:
         "name": info.get("name", ""),
         "num_docks_available": status.get("num_docks_available", 0),
         "num_bikes_available": status.get("num_bikes_available", 0),
+        "num_vehicles_available": status.get("num_vehicles_available", 0),
+        "vehicle_types_available": status.get("vehicle_types_available", []),
+        "vehicle_docks_available": status.get("vehicle_docks_available", []),
+        "ebikes_available": count_ebikes_available(status),
         "capacity": info.get("capacity", 0),
+        "is_installed": status.get("is_installed", 0),
+        "is_renting": status.get("is_renting", 0),
         "is_returning": status.get("is_returning", 0),
         "station_status": status.get("station_status", "unknown"),
+        "last_reported": status.get("last_reported"),
         "observed_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -111,6 +178,10 @@ def get_nearby_stations(
     """Nearest max_results stations that accept returns and have >= min_docks, capped at max_radius_m."""
     info = fetch_all_stations()
     status = fetch_live_status()
+    try:
+        vehicle_types = fetch_vehicle_types()
+    except Exception:
+        vehicle_types = {}
 
     anchor = info.get(station_id)
     if not anchor or anchor["lat"] is None or anchor["lon"] is None:
@@ -136,7 +207,68 @@ def get_nearby_stations(
             "name": s_info["name"],
             "distance_m": round(dist),
             "docks_available": docks,
+            "ebikes_available": count_ebikes_available(s_status, vehicle_types),
             "station_status": s_status.get("station_status", "active"),
+        })
+
+    candidates.sort(key=lambda x: x["distance_m"])
+    return candidates[:max_results]
+
+
+def get_nearby_ebike_stations(
+    lat: float,
+    lon: float,
+    max_results: int = 3,
+    require_return_dock: bool = True,
+    exclude_station_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Nearest stations with available e-bikes, optionally also requiring a return dock."""
+    info = fetch_all_stations()
+    status = fetch_live_status()
+    try:
+        vehicle_types = fetch_vehicle_types()
+    except Exception:
+        vehicle_types = {}
+
+    candidates: list[dict[str, Any]] = []
+    for station_id, s_info in info.items():
+        if exclude_station_id and station_id == exclude_station_id:
+            continue
+
+        station_lat = s_info.get("lat")
+        station_lon = s_info.get("lon")
+        if station_lat is None or station_lon is None:
+            continue
+
+        s_status = status.get(station_id, {})
+        if not s_status.get("is_installed", 1):
+            continue
+        if not s_status.get("is_renting", 1):
+            continue
+        if s_status.get("station_status", "active") != "active":
+            continue
+
+        docks = int(s_status.get("num_docks_available", 0) or 0)
+        if require_return_dock and (
+            not s_status.get("is_returning", 0) or docks < 1
+        ):
+            continue
+
+        ebikes = count_ebikes_available(s_status, vehicle_types)
+        if ebikes < 1:
+            continue
+
+        candidates.append({
+            "station_id": station_id,
+            "station_name": s_info.get("name", ""),
+            "name": s_info.get("name", ""),
+            "distance_m": round(haversine_m(lat, lon, station_lat, station_lon)),
+            "docks_available": docks,
+            "ebikes_available": ebikes,
+            "station_status": s_status.get("station_status", "active"),
+            "is_renting": s_status.get("is_renting", 1),
+            "is_returning": s_status.get("is_returning", 0),
+            "battery_details_available": False,
         })
 
     candidates.sort(key=lambda x: x["distance_m"])

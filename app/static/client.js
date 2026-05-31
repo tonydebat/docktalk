@@ -92,13 +92,10 @@ function handleServerEvent(data) {
   const status = (data.monitor_status || "").toUpperCase();
   const stopped = status === "STOPPED";
   const isCritical = !stopped && (status.includes("ALERTED") || status.includes("WARNING"));
-  const dockNoun = data.docks === 1 ? "dock" : "docks";
   elStation.textContent = stopped
     ? "No station selected"
     : (data.target_station_name || "No station selected");
-  elDocks.textContent = stopped
-    ? "—"
-    : (data.docks == null ? "No live dock count yet" : `${data.docks} open ${dockNoun}`);
+  renderAvailability(data, stopped);
   elDocks.classList.toggle("critical", isCritical);
   elStatus.textContent = (data.monitor_status || "Not started").replaceAll("_", " ");
   renderMessage(data.message || "");
@@ -113,18 +110,44 @@ function handleServerEvent(data) {
 const TARGET_COLOR = "#3b82f6";
 const ALTERNATIVE_COLOR = "#f59e0b";
 
+function renderAvailability(data, stopped) {
+  elDocks.replaceChildren();
+  if (stopped) {
+    elDocks.textContent = "-";
+    return;
+  }
+  if (data.docks == null) {
+    elDocks.textContent = "No live dock count yet";
+    return;
+  }
+
+  const dockNoun = data.docks === 1 ? "dock" : "docks";
+  const dockLine = document.createElement("span");
+  dockLine.textContent = `${data.docks} open ${dockNoun}`;
+  elDocks.append(dockLine);
+
+  if (data.ebikes != null) {
+    const ebikeNoun = data.ebikes === 1 ? "e-bike" : "e-bikes";
+    const ebikeLine = document.createElement("span");
+    ebikeLine.textContent = `${data.ebikes} available ${ebikeNoun}`;
+    elDocks.append(ebikeLine);
+  }
+}
+
 function updateMap(data) {
   const monitorStatus = (data.monitor_status || "").toUpperCase();
   const isAlerted = monitorStatus.includes("ALERTED") || monitorStatus.includes("WARNING");
   const isChoosing = monitorStatus.includes("CHOOSING") || monitorStatus.includes("CHANGING");
+  const hasActiveTarget = Boolean(data.target_station_id);
 
   let centerLat = data.target_lat;
   let centerLon = data.target_lon;
   let centerKey = data.target_station_id || "";
 
   const candidates = data.candidates || [];
+  const options = data.options || [];
   if (isChoosing || typeof centerLat !== "number" || typeof centerLon !== "number") {
-    const first = candidates.find((c) => typeof c.lat === "number" && typeof c.lon === "number");
+    const first = [...candidates, ...options].find((c) => typeof c.lat === "number" && typeof c.lon === "number");
     if (first) {
       centerLat = first.lat;
       centerLon = first.lon;
@@ -159,29 +182,41 @@ function updateMap(data) {
   const targetDocks = data.docks;
   const targetDockLabel = targetDocks == null ? "no live count" : `${targetDocks} open docks`;
 
-  const numberedRows = isChoosing
+  const hasEbikeOptions = options.some((row) => row.ebikes_available != null);
+  const numberedRows = hasEbikeOptions
+    ? options
+    : isChoosing
     ? candidates
-    : ((data.options && data.options.length ? data.options : candidates) || []);
+    : options;
   let targetWasNumbered = false;
+  const numberedPoints = [];
 
   numberedRows.forEach((row, i) => {
     if (typeof row.lat !== "number" || typeof row.lon !== "number") return;
+    numberedPoints.push([row.lat, row.lon]);
     const number = i + 1;
     const docks = row.docks_available ?? row.available_docks ?? row.num_docks_available ?? 0;
+    const ebikes = row.ebikes_available;
     const name = row.station_name || row.name || "Station";
-    const isTarget = !isChoosing && row.station_id === data.target_station_id;
+    const isTarget = !isChoosing && !hasEbikeOptions && row.station_id === data.target_station_id;
     if (isTarget) targetWasNumbered = true;
     const color = isTarget ? TARGET_COLOR : ALTERNATIVE_COLOR;
+    const tooltipMeta = ebikes == null
+      ? `${docks} docks`
+      : `${ebikes} e-bikes, ${docks} docks`;
 
     L.marker([row.lat, row.lon], {
       icon: numberedIcon(number, color, isTarget, isAlerted && isTarget),
       zIndexOffset: isTarget ? 1000 : 0,
     })
-      .bindTooltip(`${name} - ${docks} docks`, { direction: "top", offset: [0, -16] })
+      .bindTooltip(`${name} - ${tooltipMeta}`, { direction: "top", offset: [0, -16] })
       .addTo(markerLayer);
   });
 
-  if (!targetWasNumbered && !isChoosing && typeof data.target_lat === "number") {
+  const boundsPoints = [...numberedPoints];
+
+  if (!targetWasNumbered && !isChoosing && hasActiveTarget && typeof data.target_lat === "number") {
+    boundsPoints.push([data.target_lat, data.target_lon]);
     L.circleMarker([data.target_lat, data.target_lon], {
       radius: 14,
       color: "#0b1f2a",
@@ -192,6 +227,23 @@ function updateMap(data) {
     })
       .bindTooltip(`${targetName} - ${targetDockLabel}`, { direction: "top", offset: [0, -10] })
       .addTo(markerLayer);
+  }
+
+  if (hasEbikeOptions && numberedPoints.length > 0) {
+    const ebikeCenterKey = `ebikes:${data.target_station_id || ""}:${numberedRows.map((row) => row.station_id || "").join(",")}`;
+    if (ebikeCenterKey !== lastMappedTargetId) {
+      if (boundsPoints.length === 1) {
+        mapInstance.flyTo(boundsPoints[0], 16, { duration: 0.7 });
+      } else {
+        mapInstance.fitBounds(boundsPoints, {
+          animate: true,
+          duration: 0.7,
+          maxZoom: 16,
+          padding: [36, 36],
+        });
+      }
+      lastMappedTargetId = ebikeCenterKey;
+    }
   }
 
   setTimeout(() => mapInstance.invalidateSize(), 0);
@@ -230,6 +282,7 @@ function renderStationRows(panel, list, rows) {
     const row = rows[i];
     const stationName = row.station_name || row.name || "Nearby station";
     const docks = row.docks_available ?? row.available_docks ?? row.num_docks_available ?? 0;
+    const ebikes = row.ebikes_available;
     const distance = row.distance_m ?? row.distance_meters;
     const role = row.candidate_role;
     const roleLabel = role === "recommended" ? "Recommended" : role === "closest" ? "Closest" : "";
@@ -247,7 +300,8 @@ function renderStationRows(panel, list, rows) {
 
     const meta = document.createElement("div");
     meta.className = "option-meta";
-    const stationMeta = distance == null ? `${docks} docks` : `${docks} docks, ${distance} m`;
+    const availability = ebikes == null ? `${docks} docks` : `${ebikes} e-bikes, ${docks} docks`;
+    const stationMeta = distance == null ? availability : `${availability}, ${distance} m`;
     meta.textContent = roleLabel ? `${roleLabel} - ${stationMeta}` : stationMeta;
 
     item.append(index, name, meta);
